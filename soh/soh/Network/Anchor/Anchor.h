@@ -65,6 +65,7 @@ typedef struct {
     u8 showLocationsMode; // 0 = none, 1 = team, 2 = all
     u8 teleportMode;      // 0 = off, 1 = team, 2 = all
     u8 syncItemsAndFlags; // 0 = off, 1 = on
+    u8 syncEnemies;       // 0 = off, 1 = on
 } RoomState;
 
 class Anchor : public Network {
@@ -82,6 +83,7 @@ class Anchor : public Network {
     nlohmann::json PrepClientState();
     nlohmann::json PrepRoomState();
     void RegisterHooks();
+    void RegisterEnemySyncHooks();
     void RefreshClientActors();
     void SetDummyPlayerClientId(const Actor* actor, uint32_t clientId);
 
@@ -89,12 +91,15 @@ class Anchor : public Network {
     void HandlePacket_ConsumeAdultTradeItem(nlohmann::json payload);
     void HandlePacket_DamagePlayer(nlohmann::json payload);
     void HandlePacket_DisableAnchor(nlohmann::json payload);
+    void HandlePacket_EnemyDefeated(nlohmann::json payload);
+    void HandlePacket_EnemyState(nlohmann::json payload);
     void HandlePacket_EntranceDiscovered(nlohmann::json payload);
     void HandlePacket_GameComplete(nlohmann::json payload);
     void HandlePacket_GiveItem(nlohmann::json payload);
     void HandlePacket_OcarinaSfx(nlohmann::json payload);
     void HandlePacket_PlayerSfx(nlohmann::json payload);
     void HandlePacket_PlayerUpdate(nlohmann::json payload);
+    void HandlePacket_RequestEnemyState(nlohmann::json payload);
     void HandlePacket_RequestTeamState(nlohmann::json payload);
     void HandlePacket_RequestTeleport(nlohmann::json payload);
     void HandlePacket_ServerMessage(nlohmann::json payload);
@@ -116,6 +121,8 @@ class Anchor : public Network {
     inline static const std::string ALL_CLIENT_STATE = "ALL_CLIENT_STATE";
     inline static const std::string DAMAGE_PLAYER = "DAMAGE_PLAYER";
     inline static const std::string DISABLE_ANCHOR = "DISABLE_ANCHOR";
+    inline static const std::string ENEMY_DEFEATED = "ENEMY_DEFEATED";
+    inline static const std::string ENEMY_STATE = "ENEMY_STATE";
     inline static const std::string ENTRANCE_DISCOVERED = "ENTRANCE_DISCOVERED";
     inline static const std::string GAME_COMPLETE = "GAME_COMPLETE";
     inline static const std::string GIVE_ITEM = "GIVE_ITEM";
@@ -123,6 +130,7 @@ class Anchor : public Network {
     inline static const std::string OCARINA_SFX = "OCARINA_SFX";
     inline static const std::string PLAYER_SFX = "PLAYER_SFX";
     inline static const std::string PLAYER_UPDATE = "PLAYER_UPDATE";
+    inline static const std::string REQUEST_ENEMY_STATE = "REQUEST_ENEMY_STATE";
     inline static const std::string REQUEST_TEAM_STATE = "REQUEST_TEAM_STATE";
     inline static const std::string REQUEST_TELEPORT = "REQUEST_TELEPORT";
     inline static const std::string SERVER_MESSAGE = "SERVER_MESSAGE";
@@ -155,6 +163,7 @@ class Anchor : public Network {
 
     void SendPacket_ClearTeamState(std::string teamId);
     void SendPacket_DamagePlayer(u32 clientId, u8 damageEffect, u8 damage);
+    void SendPacket_EnemyDefeated(const std::string& key);
     void SendPacket_EntranceDiscovered(u16 entranceIndex);
     void SendPacket_GameComplete();
     void SendPacket_GiveItem(u16 modId, s16 getItemId);
@@ -162,6 +171,7 @@ class Anchor : public Network {
     void SendPacket_OcarinaSfx(uint8_t note, float modulator, int8_t bend);
     void SendPacket_PlayerSfx(u16 sfxId);
     void SendPacket_PlayerUpdate();
+    void SendPacket_RequestEnemyState();
     void SendPacket_RequestTeamState();
     void SendPacket_RequestTeleport(u32 clientId);
     void SendPacket_SetCheckStatus(RandomizerCheck rc);

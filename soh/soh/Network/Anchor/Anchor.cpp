@@ -133,6 +133,12 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_DamagePlayer(payload);
             else if (packetType == DISABLE_ANCHOR)
                 HandlePacket_DisableAnchor(payload);
+            else if (packetType == ENEMY_DEFEATED)
+                HandlePacket_EnemyDefeated(payload);
+            else if (packetType == ENEMY_STATE)
+                HandlePacket_EnemyState(payload);
+            else if (packetType == REQUEST_ENEMY_STATE)
+                HandlePacket_RequestEnemyState(payload);
             else if (packetType == ENTRANCE_DISCOVERED)
                 HandlePacket_EntranceDiscovered(payload);
             else if (packetType == GAME_COMPLETE)

@@ -193,6 +193,14 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                 UIWidgets::CheckboxOptions().DefaultValue(true).Color(THEME_COLOR))) {
         anchor->SendPacket_UpdateRoomState();
     }
+    if (UIWidgets::CVarCheckbox("Sync Enemies", CVAR_REMOTE_ANCHOR("RoomSettings.SyncEnemies"),
+                                UIWidgets::CheckboxOptions()
+                                    .DefaultValue(true)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("When a player defeats an enemy, it is also defeated for every other "
+                                             "player in the same area. All players need this build."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
 }
 
 void AnchorInstructionsMenu(WidgetInfo& info) {

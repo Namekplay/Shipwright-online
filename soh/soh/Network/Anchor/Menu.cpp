@@ -197,8 +197,18 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                 UIWidgets::CheckboxOptions()
                                     .DefaultValue(true)
                                     .Color(THEME_COLOR)
-                                    .Tooltip("When a player defeats an enemy, it is also defeated for every other "
-                                             "player in the same area. All players need this build."))) {
+                                    .Tooltip("When a player hits or defeats an enemy, the same enemy takes that "
+                                             "damage or is defeated for every other player in the same area. All "
+                                             "players need this build."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
+    if (UIWidgets::CVarCheckbox("Sync Time of Day", CVAR_REMOTE_ANCHOR("RoomSettings.SyncTime"),
+                                UIWidgets::CheckboxOptions()
+                                    .DefaultValue(true)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("Everyone shares the same time of day. Clocks only move forward, so "
+                                             "players catch up to whoever is furthest ahead (Sun's Song included). "
+                                             "All players need this build."))) {
         anchor->SendPacket_UpdateRoomState();
     }
 }

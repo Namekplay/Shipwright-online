@@ -25,12 +25,14 @@ nlohmann::json Anchor::PrepRoomState() {
         payload["teleportMode"] = 0;
         payload["syncItemsAndFlags"] = 0;
         payload["syncEnemies"] = 0;
+        payload["syncTime"] = 0;
     } else {
         payload["pvpMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.PvpMode"), 1);
         payload["showLocationsMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.ShowLocationsMode"), 1);
         payload["teleportMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.TeleportMode"), 1);
         payload["syncItemsAndFlags"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncItemsAndFlags"), 1);
         payload["syncEnemies"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncEnemies"), 1);
+        payload["syncTime"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncTime"), 1);
     }
 
     return payload;
@@ -58,4 +60,5 @@ void Anchor::HandlePacket_UpdateRoomState(nlohmann::json payload) {
     // Rooms created by players without enemy sync won't have this field; default it on, except in the public room
     bool isGlobalRoom = (std::string("soh-global") == CVarGetString(CVAR_REMOTE_ANCHOR("RoomId"), ""));
     roomState.syncEnemies = isGlobalRoom ? 0 : payload["state"].value("syncEnemies", (u8)1);
+    roomState.syncTime = isGlobalRoom ? 0 : payload["state"].value("syncTime", (u8)1);
 }

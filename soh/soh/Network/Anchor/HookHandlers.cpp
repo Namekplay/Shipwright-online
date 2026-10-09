@@ -93,6 +93,7 @@ void Anchor::RegisterHooks() {
         }
 
         SendPacket_PlayerUpdate();
+        TickTimeSync();
     });
 
     COND_HOOK(OnGameFrameUpdate, isConnected, [&]() { ProcessIncomingPacketQueue(); });

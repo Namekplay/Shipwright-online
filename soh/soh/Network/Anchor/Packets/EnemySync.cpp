@@ -17,10 +17,15 @@ extern PlayState* gPlayState;
 }
 
 /**
- * Enemy Sync (shared kills)
+ * Enemy Sync (shared damage and kills)
  *
  * When any player defeats an enemy, that same enemy is removed from the game of every other player who is in the same
  * scene, and players who enter a scene later are told which enemies are already dead there.
+ *
+ * When any player damages an enemy, the same enemy loses that much health in everyone else's game too, so players
+ * fighting together wear it down together. A synced hit never takes an enemy below 1 health: the final blow always
+ * happens in someone's own game, which then removes it for everyone through ENEMY_DEFEATED. That way every enemy dies
+ * through its normal death code at least once, and nobody is left with a zero-health enemy that never dies.
  *
  * Enemies are identified across games by: scene + actor id + params + spawn (home) position. Enemies placed in the
  * scene/room data spawn at the exact same position for everyone, so this key matches between games. Enemies spawned
@@ -32,6 +37,7 @@ extern PlayState* gPlayState;
  * ENEMY_DEFEATED      - Broadcast to the room when you defeat an enemy
  * REQUEST_ENEMY_STATE - Broadcast to the room when you enter a scene, asking for that scene's dead enemies
  * ENEMY_STATE         - Reply sent directly to the player who asked
+ * ENEMY_DAMAGE        - Broadcast to the room when an enemy loses health in your game
  */
 
 namespace {
@@ -39,6 +45,7 @@ namespace {
 struct EnemySyncData {
     std::string key;
     bool handled = false; // Already defeated in this game (by us or by a sync), don't touch it again
+    s16 lastHealth = -1;  // Health seen at the end of the last update, -1 until the first update
 };
 static ObjectExtension::Register<EnemySyncData> EnemySyncDataRegister;
 
@@ -62,19 +69,34 @@ bool KeyIsForScene(const std::string& key, s16 sceneNum) {
 // soft-lock them or take away something they need, so they are never synced.
 bool IsEnemySyncExcluded(Actor* actor) {
     switch (actor->id) {
-        case ACTOR_EN_IK:          // Iron Knuckle (Nabooru cutscene)
-        case ACTOR_EN_TORCH2:      // Dark Link
-        case ACTOR_EN_PO_SISTERS:  // Forest Temple Poe sisters
-        case ACTOR_EN_PO_FIELD:    // Big Poes (bottle reward)
-        case ACTOR_EN_SKJ:         // Skull Kid
-        case ACTOR_EN_DNS:         // Business scrubs
-        case ACTOR_EN_HINTNUTS:    // Deku Tree 2-3-1 scrub puzzle
+        case ACTOR_EN_IK:         // Iron Knuckle (Nabooru cutscene)
+        case ACTOR_EN_TORCH2:     // Dark Link
+        case ACTOR_EN_PO_SISTERS: // Forest Temple Poe sisters
+        case ACTOR_EN_PO_FIELD:   // Big Poes (bottle reward)
+        case ACTOR_EN_SKJ:        // Skull Kid
+        case ACTOR_EN_DNS:        // Business scrubs
+        case ACTOR_EN_HINTNUTS:   // Deku Tree 2-3-1 scrub puzzle
             return true;
-        case ACTOR_EN_SW:          // Gold Skulltulas (token reward). Regular Skullwalltulas are fine.
+        case ACTOR_EN_SW: // Gold Skulltulas (token reward). Regular Skullwalltulas are fine.
             return ((actor->params & 0xE000) >> 0xD) != 0;
         default:
             return false;
     }
+}
+
+Actor* FindLiveEnemyByKey(const std::string& key) {
+    for (Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_ENEMY].head; actor != NULL; actor = actor->next) {
+        if (actor->update == NULL) {
+            continue;
+        }
+
+        EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+        if (data != nullptr && !data->handled && data->key == key) {
+            return actor;
+        }
+    }
+
+    return nullptr;
 }
 
 bool ShouldSyncEnemies() {
@@ -128,6 +150,25 @@ void Anchor::RegisterEnemySyncHooks() {
         data->handled = true;
         sDefeatedEnemies[data->key] = false;
         SendPacket_EnemyDefeated(data->key);
+    });
+
+    // Watch each enemy's health after it updates. If it dropped, tell everyone else how much.
+    COND_HOOK(OnActorUpdate, isConnected, [&](void* refActor) {
+        Actor* actor = (Actor*)refActor;
+        if (actor->category != ACTORCAT_ENEMY || !roomState.syncEnemies) {
+            return;
+        }
+
+        EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+        if (data == nullptr || data->handled) {
+            return;
+        }
+
+        s16 health = actor->colChkInfo.health;
+        if (data->lastHealth > health && !IsEnemySyncExcluded(actor)) {
+            SendPacket_EnemyDamage(data->key, data->lastHealth - health);
+        }
+        data->lastHealth = health;
     });
 
     // Remove enemies that another player defeated
@@ -199,6 +240,63 @@ void Anchor::HandlePacket_EnemyDefeated(nlohmann::json payload) {
     }
 
     sDefeatedEnemies.emplace(key, false);
+}
+
+void Anchor::SendPacket_EnemyDamage(const std::string& key, s16 damage) {
+    if (!ShouldSyncEnemies()) {
+        return;
+    }
+
+    nlohmann::json payload;
+    payload["type"] = ENEMY_DAMAGE;
+    payload["sceneNum"] = gPlayState->sceneNum;
+    payload["key"] = key;
+    payload["damage"] = damage;
+    payload["quiet"] = true;
+
+    SendJsonToRemote(payload);
+}
+
+void Anchor::HandlePacket_EnemyDamage(nlohmann::json payload) {
+    if (!ShouldSyncEnemies()) {
+        return;
+    }
+
+    s16 sceneNum = payload["sceneNum"].get<s16>();
+    if (sceneNum != gPlayState->sceneNum) {
+        return;
+    }
+
+    std::string key = payload["key"].get<std::string>();
+    s16 damage = payload["damage"].get<s16>();
+    if (damage <= 0) {
+        return;
+    }
+
+    // Only enemies currently loaded in our game take the hit (an enemy in another room of the dungeon is not loaded)
+    Actor* actor = FindLiveEnemyByKey(key);
+    if (actor == nullptr || IsEnemySyncExcluded(actor)) {
+        return;
+    }
+
+    s16 health = actor->colChkInfo.health;
+    if (health <= 1) {
+        return;
+    }
+
+    s16 newHealth = health - damage;
+    if (newHealth < 1) {
+        newHealth = 1;
+    }
+
+    actor->colChkInfo.health = (u8)newHealth;
+
+    // Remember the new value so our own health watcher doesn't send this hit back out
+    EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+    data->lastHealth = newHealth;
+
+    // Brief red flash so you can see a teammate landed a hit
+    Actor_SetColorFilter(actor, 0x4000, 255, 0, 8);
 }
 
 void Anchor::SendPacket_RequestEnemyState() {

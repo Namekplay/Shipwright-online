@@ -66,6 +66,7 @@ typedef struct {
     u8 teleportMode;      // 0 = off, 1 = team, 2 = all
     u8 syncItemsAndFlags; // 0 = off, 1 = on
     u8 syncEnemies;       // 0 = off, 1 = on
+    u8 syncTime;          // 0 = off, 1 = on
 } RoomState;
 
 class Anchor : public Network {
@@ -84,6 +85,7 @@ class Anchor : public Network {
     nlohmann::json PrepRoomState();
     void RegisterHooks();
     void RegisterEnemySyncHooks();
+    void TickTimeSync();
     void RefreshClientActors();
     void SetDummyPlayerClientId(const Actor* actor, uint32_t clientId);
 
@@ -91,6 +93,7 @@ class Anchor : public Network {
     void HandlePacket_ConsumeAdultTradeItem(nlohmann::json payload);
     void HandlePacket_DamagePlayer(nlohmann::json payload);
     void HandlePacket_DisableAnchor(nlohmann::json payload);
+    void HandlePacket_EnemyDamage(nlohmann::json payload);
     void HandlePacket_EnemyDefeated(nlohmann::json payload);
     void HandlePacket_EnemyState(nlohmann::json payload);
     void HandlePacket_EntranceDiscovered(nlohmann::json payload);
@@ -106,6 +109,7 @@ class Anchor : public Network {
     void HandlePacket_SetCheckStatus(nlohmann::json payload);
     void HandlePacket_SetFlag(nlohmann::json payload);
     void HandlePacket_TeleportTo(nlohmann::json payload);
+    void HandlePacket_TimeSync(nlohmann::json payload);
     void HandlePacket_UnsetFlag(nlohmann::json payload);
     void HandlePacket_UpdateBeansCount(nlohmann::json payload);
     void HandlePacket_UpdateClientState(nlohmann::json payload);
@@ -121,6 +125,7 @@ class Anchor : public Network {
     inline static const std::string ALL_CLIENT_STATE = "ALL_CLIENT_STATE";
     inline static const std::string DAMAGE_PLAYER = "DAMAGE_PLAYER";
     inline static const std::string DISABLE_ANCHOR = "DISABLE_ANCHOR";
+    inline static const std::string ENEMY_DAMAGE = "ENEMY_DAMAGE";
     inline static const std::string ENEMY_DEFEATED = "ENEMY_DEFEATED";
     inline static const std::string ENEMY_STATE = "ENEMY_STATE";
     inline static const std::string ENTRANCE_DISCOVERED = "ENTRANCE_DISCOVERED";
@@ -137,6 +142,7 @@ class Anchor : public Network {
     inline static const std::string SET_CHECK_STATUS = "SET_CHECK_STATUS";
     inline static const std::string SET_FLAG = "SET_FLAG";
     inline static const std::string TELEPORT_TO = "TELEPORT_TO";
+    inline static const std::string TIME_SYNC = "TIME_SYNC";
     inline static const std::string UNSET_FLAG = "UNSET_FLAG";
     inline static const std::string UPDATE_BEANS_COUNT = "UPDATE_BEANS_COUNT";
     inline static const std::string UPDATE_CLIENT_STATE = "UPDATE_CLIENT_STATE";
@@ -163,6 +169,7 @@ class Anchor : public Network {
 
     void SendPacket_ClearTeamState(std::string teamId);
     void SendPacket_DamagePlayer(u32 clientId, u8 damageEffect, u8 damage);
+    void SendPacket_EnemyDamage(const std::string& key, s16 damage);
     void SendPacket_EnemyDefeated(const std::string& key);
     void SendPacket_EntranceDiscovered(u16 entranceIndex);
     void SendPacket_GameComplete();
@@ -177,6 +184,7 @@ class Anchor : public Network {
     void SendPacket_SetCheckStatus(RandomizerCheck rc);
     void SendPacket_SetFlag(s16 sceneNum, s16 flagType, s16 flag);
     void SendPacket_TeleportTo(u32 clientId);
+    void SendPacket_TimeSync();
     void SendPacket_UnsetFlag(s16 sceneNum, s16 flagType, s16 flag);
     void SendPacket_UpdateBeansCount();
     void SendPacket_UpdateClientState();

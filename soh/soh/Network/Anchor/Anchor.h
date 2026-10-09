@@ -67,6 +67,7 @@ typedef struct {
     u8 syncItemsAndFlags; // 0 = off, 1 = on
     u8 syncEnemies;       // 0 = off, 1 = on
     u8 syncTime;          // 0 = off, 1 = on
+    u8 syncObjects;       // 0 = off, 1 = on
 } RoomState;
 
 class Anchor : public Network {
@@ -85,6 +86,7 @@ class Anchor : public Network {
     nlohmann::json PrepRoomState();
     void RegisterHooks();
     void RegisterEnemySyncHooks();
+    void RegisterObjectSyncHooks();
     void TickTimeSync();
     void RefreshClientActors();
     void SetDummyPlayerClientId(const Actor* actor, uint32_t clientId);
@@ -99,10 +101,13 @@ class Anchor : public Network {
     void HandlePacket_EntranceDiscovered(nlohmann::json payload);
     void HandlePacket_GameComplete(nlohmann::json payload);
     void HandlePacket_GiveItem(nlohmann::json payload);
+    void HandlePacket_ObjectBroken(nlohmann::json payload);
+    void HandlePacket_ObjectState(nlohmann::json payload);
     void HandlePacket_OcarinaSfx(nlohmann::json payload);
     void HandlePacket_PlayerSfx(nlohmann::json payload);
     void HandlePacket_PlayerUpdate(nlohmann::json payload);
     void HandlePacket_RequestEnemyState(nlohmann::json payload);
+    void HandlePacket_RequestObjectState(nlohmann::json payload);
     void HandlePacket_RequestTeamState(nlohmann::json payload);
     void HandlePacket_RequestTeleport(nlohmann::json payload);
     void HandlePacket_ServerMessage(nlohmann::json payload);
@@ -132,10 +137,13 @@ class Anchor : public Network {
     inline static const std::string GAME_COMPLETE = "GAME_COMPLETE";
     inline static const std::string GIVE_ITEM = "GIVE_ITEM";
     inline static const std::string HANDSHAKE = "HANDSHAKE";
+    inline static const std::string OBJECT_BROKEN = "OBJECT_BROKEN";
+    inline static const std::string OBJECT_STATE = "OBJECT_STATE";
     inline static const std::string OCARINA_SFX = "OCARINA_SFX";
     inline static const std::string PLAYER_SFX = "PLAYER_SFX";
     inline static const std::string PLAYER_UPDATE = "PLAYER_UPDATE";
     inline static const std::string REQUEST_ENEMY_STATE = "REQUEST_ENEMY_STATE";
+    inline static const std::string REQUEST_OBJECT_STATE = "REQUEST_OBJECT_STATE";
     inline static const std::string REQUEST_TEAM_STATE = "REQUEST_TEAM_STATE";
     inline static const std::string REQUEST_TELEPORT = "REQUEST_TELEPORT";
     inline static const std::string SERVER_MESSAGE = "SERVER_MESSAGE";
@@ -175,10 +183,12 @@ class Anchor : public Network {
     void SendPacket_GameComplete();
     void SendPacket_GiveItem(u16 modId, s16 getItemId);
     void SendPacket_Handshake();
+    void SendPacket_ObjectBroken(const std::string& key, bool remember);
     void SendPacket_OcarinaSfx(uint8_t note, float modulator, int8_t bend);
     void SendPacket_PlayerSfx(u16 sfxId);
     void SendPacket_PlayerUpdate();
     void SendPacket_RequestEnemyState();
+    void SendPacket_RequestObjectState();
     void SendPacket_RequestTeamState();
     void SendPacket_RequestTeleport(u32 clientId);
     void SendPacket_SetCheckStatus(RandomizerCheck rc);

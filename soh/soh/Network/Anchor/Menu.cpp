@@ -202,6 +202,15 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                              "players need this build."))) {
         anchor->SendPacket_UpdateRoomState();
     }
+    if (UIWidgets::CVarCheckbox("Sync Pots, Grass & Crates", CVAR_REMOTE_ANCHOR("RoomSettings.SyncObjects"),
+                                UIWidgets::CheckboxOptions()
+                                    .DefaultValue(true)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("When a player breaks, cuts or picks up a pot, crate, rock or bush, it "
+                                             "breaks for every other player in the same area too. Item drops still "
+                                             "only go to whoever broke it. All players need this build."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
     if (UIWidgets::CVarCheckbox("Sync Time of Day", CVAR_REMOTE_ANCHOR("RoomSettings.SyncTime"),
                                 UIWidgets::CheckboxOptions()
                                     .DefaultValue(true)

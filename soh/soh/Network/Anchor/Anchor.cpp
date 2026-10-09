@@ -147,6 +147,12 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_GameComplete(payload);
             else if (packetType == GIVE_ITEM)
                 HandlePacket_GiveItem(payload);
+            else if (packetType == OBJECT_BROKEN)
+                HandlePacket_ObjectBroken(payload);
+            else if (packetType == OBJECT_STATE)
+                HandlePacket_ObjectState(payload);
+            else if (packetType == REQUEST_OBJECT_STATE)
+                HandlePacket_RequestObjectState(payload);
             else if (packetType == OCARINA_SFX)
                 HandlePacket_OcarinaSfx(payload);
             else if (packetType == PLAYER_UPDATE)

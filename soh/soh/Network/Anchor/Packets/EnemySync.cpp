@@ -5,7 +5,10 @@
 #include "soh/ObjectExtension/ObjectExtension.h"
 #include "soh/OTRGlobals.h"
 
+#include <algorithm>
+#include <cfloat>
 #include <cmath>
+#include <vector>
 #include <map>
 #include <string>
 
@@ -38,6 +41,14 @@ extern PlayState* gPlayState;
  * REQUEST_ENEMY_STATE - Broadcast to the room when you enter a scene, asking for that scene's dead enemies
  * ENEMY_STATE         - Reply sent directly to the player who asked
  * ENEMY_DAMAGE        - Broadcast to the room when an enemy loses health in your game
+ * ENEMY_MOVEMENT      - Sent ~10 times a second to players in the same scene with the positions of the enemies you
+ *                       are running (see below)
+ *
+ * Enemy movement: every game still runs its own enemy AI, but for each enemy the player standing closest to it is in
+ * charge of it. That player's game runs the enemy normally and sends out where it is and which way it faces. Everyone
+ * else's copy of that enemy is pulled toward that position each frame (or snapped there if it's far off). The enemy
+ * then fights whoever is closest exactly like normal, and everyone else sees it in the same place. When a different
+ * player becomes the closest, control passes to them automatically.
  */
 
 namespace {
@@ -46,6 +57,14 @@ struct EnemySyncData {
     std::string key;
     bool handled = false; // Already defeated in this game (by us or by a sync), don't touch it again
     s16 lastHealth = -1;  // Health seen at the end of the last update, -1 until the first update
+
+    // Movement sync
+    bool isMovementAuthority = true; // We're the closest player, so our game runs this enemy for everyone
+    bool hasTarget = false;          // We've received a position for this enemy from the player running it
+    Vec3f targetPos = { 0.0f, 0.0f, 0.0f };
+    s16 targetShapeRotY = 0;
+    s16 targetWorldRotY = 0;
+    u32 targetFrame = 0; // gameplayFrames when the target arrived
 };
 static ObjectExtension::Register<EnemySyncData> EnemySyncDataRegister;
 
@@ -53,6 +72,14 @@ static ObjectExtension::Register<EnemySyncData> EnemySyncDataRegister;
 static std::map<std::string, bool> sDefeatedEnemies;
 static s16 sEnemySyncSceneNum = -1;
 static Vec3f sZeroVec = { 0.0f, 0.0f, 0.0f };
+
+// Movement sync tuning
+constexpr u32 ENEMY_MOVEMENT_SEND_INTERVAL = 2;   // Send every 2 game updates (~10 times a second)
+constexpr f32 ENEMY_MOVEMENT_AUTHORITY_MARGIN = 50.0f; // Near-ties: both players run the enemy themselves
+constexpr u32 ENEMY_MOVEMENT_STALE_FRAMES = 10;   // Stop following a position older than ~half a second
+constexpr f32 ENEMY_MOVEMENT_SNAP_DISTANCE = 300.0f; // Further off than this: jump straight there
+constexpr f32 ENEMY_MOVEMENT_LERP = 0.5f;          // Otherwise close half the gap each frame
+static u32 sEnemyMovementFrameCounter = 0;
 
 std::string MakeEnemyKey(Actor* actor) {
     return std::to_string(gPlayState->sceneNum) + ":" + std::to_string(actor->id) + ":" +
@@ -82,6 +109,62 @@ bool IsEnemySyncExcluded(Actor* actor) {
         default:
             return false;
     }
+}
+
+// Enemies whose position must not be driven by another player's game. Wallmasters and flying pots/tiles home in on
+// the local player specifically, so pulling them toward someone else's spot would make them miss or float.
+bool IsEnemyMovementExcluded(Actor* actor) {
+    if (IsEnemySyncExcluded(actor)) {
+        return true;
+    }
+
+    switch (actor->id) {
+        case ACTOR_EN_WALLMAS:   // Wallmaster (drops onto the local player)
+        case ACTOR_EN_TUBO_TRAP: // Flying pots
+        case ACTOR_EN_YUKABYUN:  // Flying floor tiles
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsGrabbingLocalPlayer(Actor* actor) {
+    Player* player = GET_PLAYER(gPlayState);
+    return player != nullptr &&
+           ((player->stateFlags2 & PLAYER_STATE2_GRABBED_BY_ENEMY) || player->actor.parent == actor ||
+            actor->child == &player->actor);
+}
+
+// Pull our copy of an enemy toward where the player running it says it is
+void ApplyEnemyMovement(Actor* actor, EnemySyncData* data) {
+    if (!data->hasTarget || data->isMovementAuthority) {
+        return;
+    }
+
+    if (gPlayState->gameplayFrames - data->targetFrame > ENEMY_MOVEMENT_STALE_FRAMES) {
+        // Nobody has sent this enemy for a while (they left, or we became the closest); let it run on its own
+        data->hasTarget = false;
+        return;
+    }
+
+    // Never drag an enemy that's holding us (Like Like, ReDead, etc.)
+    if (IsGrabbingLocalPlayer(actor)) {
+        return;
+    }
+
+    Vec3f diff;
+    f32 dist = Math_Vec3f_DistXYZAndStoreDiff(&actor->world.pos, &data->targetPos, &diff);
+
+    if (dist > ENEMY_MOVEMENT_SNAP_DISTANCE) {
+        actor->world.pos = data->targetPos;
+    } else {
+        actor->world.pos.x += diff.x * ENEMY_MOVEMENT_LERP;
+        actor->world.pos.y += diff.y * ENEMY_MOVEMENT_LERP;
+        actor->world.pos.z += diff.z * ENEMY_MOVEMENT_LERP;
+    }
+
+    actor->shape.rot.y += (s16)((s16)(data->targetShapeRotY - actor->shape.rot.y) * ENEMY_MOVEMENT_LERP);
+    actor->world.rot.y += (s16)((s16)(data->targetWorldRotY - actor->world.rot.y) * ENEMY_MOVEMENT_LERP);
 }
 
 Actor* FindLiveEnemyByKey(const std::string& key) {
@@ -169,6 +252,11 @@ void Anchor::RegisterEnemySyncHooks() {
             SendPacket_EnemyDamage(data->key, data->lastHealth - health);
         }
         data->lastHealth = health;
+
+        // Then line our copy up with the player who is running this enemy
+        if (roomState.syncEnemyMovement && !IsEnemyMovementExcluded(actor)) {
+            ApplyEnemyMovement(actor, data);
+        }
     });
 
     // Remove enemies that another player defeated
@@ -357,5 +445,107 @@ void Anchor::HandlePacket_EnemyState(nlohmann::json payload) {
             // Silent: these died before we arrived, so just make them not be there
             sDefeatedEnemies.emplace(keyStr, true);
         }
+    }
+}
+
+// Called every player update. Works out which enemies we're the closest player to, and sends their positions to
+// everyone else in the scene.
+void Anchor::TickEnemyMovementSync() {
+    if (!roomState.syncEnemies || !roomState.syncEnemyMovement || !IsSaveLoaded()) {
+        return;
+    }
+
+    if (++sEnemyMovementFrameCounter < ENEMY_MOVEMENT_SEND_INTERVAL) {
+        return;
+    }
+    sEnemyMovementFrameCounter = 0;
+
+    // Other players who are standing in this scene with us right now
+    std::vector<uint32_t> targets;
+    std::vector<Vec3f> otherPositions;
+    for (auto& [clientId, client] : clients) {
+        if (client.self || !client.online || !client.isSaveLoaded || client.sceneNum != gPlayState->sceneNum ||
+            client.player == nullptr) {
+            continue;
+        }
+        targets.push_back(clientId);
+        otherPositions.push_back(client.posRot.pos);
+    }
+
+    if (targets.empty()) {
+        return;
+    }
+
+    Player* self = GET_PLAYER(gPlayState);
+    nlohmann::json enemies = nlohmann::json::array();
+
+    for (Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_ENEMY].head; actor != NULL; actor = actor->next) {
+        if (actor->update == NULL || IsEnemyMovementExcluded(actor)) {
+            continue;
+        }
+
+        EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+        if (data == nullptr || data->handled) {
+            continue;
+        }
+
+        f32 myDist = Math_Vec3f_DistXYZ(&self->actor.world.pos, &actor->world.pos);
+        f32 closestOther = FLT_MAX;
+        for (Vec3f& pos : otherPositions) {
+            closestOther = std::min(closestOther, Math_Vec3f_DistXYZ(&pos, &actor->world.pos));
+        }
+
+        data->isMovementAuthority = myDist <= closestOther + ENEMY_MOVEMENT_AUTHORITY_MARGIN;
+
+        if (data->isMovementAuthority) {
+            enemies.push_back({ data->key, lroundf(actor->world.pos.x), lroundf(actor->world.pos.y),
+                                lroundf(actor->world.pos.z), actor->shape.rot.y, actor->world.rot.y });
+        }
+    }
+
+    if (enemies.empty()) {
+        return;
+    }
+
+    nlohmann::json payload;
+    payload["type"] = ENEMY_MOVEMENT;
+    payload["sceneNum"] = gPlayState->sceneNum;
+    payload["enemies"] = enemies;
+    payload["quiet"] = true;
+
+    for (uint32_t clientId : targets) {
+        payload["targetClientId"] = clientId;
+        SendJsonToRemote(payload);
+    }
+}
+
+void Anchor::HandlePacket_EnemyMovement(nlohmann::json payload) {
+    if (!ShouldSyncEnemies() || !roomState.syncEnemyMovement) {
+        return;
+    }
+
+    s16 sceneNum = payload["sceneNum"].get<s16>();
+    if (sceneNum != gPlayState->sceneNum || !payload.contains("enemies")) {
+        return;
+    }
+
+    for (auto& entry : payload["enemies"]) {
+        if (!entry.is_array() || entry.size() < 6) {
+            continue;
+        }
+
+        Actor* actor = FindLiveEnemyByKey(entry[0].get<std::string>());
+        if (actor == nullptr || IsEnemyMovementExcluded(actor)) {
+            continue;
+        }
+
+        EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+        data->hasTarget = true;
+        data->targetPos.x = entry[1].get<f32>();
+        data->targetPos.y = entry[2].get<f32>();
+        data->targetPos.z = entry[3].get<f32>();
+        data->targetShapeRotY = entry[4].get<s16>();
+        data->targetWorldRotY = entry[5].get<s16>();
+        data->targetFrame = gPlayState->gameplayFrames;
     }
 }

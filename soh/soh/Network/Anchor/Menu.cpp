@@ -202,6 +202,15 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                              "players need this build."))) {
         anchor->SendPacket_UpdateRoomState();
     }
+    if (UIWidgets::CVarCheckbox("Sync Enemy Movement", CVAR_REMOTE_ANCHOR("RoomSettings.SyncEnemyMovement"),
+                                UIWidgets::CheckboxOptions()
+                                    .DefaultValue(true)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("Enemies stand and move in the same place for everyone. The player "
+                                             "closest to an enemy controls it, and everyone else's copy follows. "
+                                             "Needs Sync Enemies on. All players need this build."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
     if (UIWidgets::CVarCheckbox("Sync Pots, Grass & Crates", CVAR_REMOTE_ANCHOR("RoomSettings.SyncObjects"),
                                 UIWidgets::CheckboxOptions()
                                     .DefaultValue(true)

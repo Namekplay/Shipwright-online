@@ -68,6 +68,7 @@ typedef struct {
     u8 syncEnemies;       // 0 = off, 1 = on
     u8 syncTime;          // 0 = off, 1 = on
     u8 syncObjects;       // 0 = off, 1 = on
+    u8 syncEnemyMovement; // 0 = off, 1 = on
 } RoomState;
 
 class Anchor : public Network {
@@ -88,6 +89,7 @@ class Anchor : public Network {
     void RegisterEnemySyncHooks();
     void RegisterObjectSyncHooks();
     void TickTimeSync();
+    void TickEnemyMovementSync();
     void RefreshClientActors();
     void SetDummyPlayerClientId(const Actor* actor, uint32_t clientId);
 
@@ -97,6 +99,7 @@ class Anchor : public Network {
     void HandlePacket_DisableAnchor(nlohmann::json payload);
     void HandlePacket_EnemyDamage(nlohmann::json payload);
     void HandlePacket_EnemyDefeated(nlohmann::json payload);
+    void HandlePacket_EnemyMovement(nlohmann::json payload);
     void HandlePacket_EnemyState(nlohmann::json payload);
     void HandlePacket_EntranceDiscovered(nlohmann::json payload);
     void HandlePacket_GameComplete(nlohmann::json payload);
@@ -132,6 +135,7 @@ class Anchor : public Network {
     inline static const std::string DISABLE_ANCHOR = "DISABLE_ANCHOR";
     inline static const std::string ENEMY_DAMAGE = "ENEMY_DAMAGE";
     inline static const std::string ENEMY_DEFEATED = "ENEMY_DEFEATED";
+    inline static const std::string ENEMY_MOVEMENT = "ENEMY_MOVEMENT";
     inline static const std::string ENEMY_STATE = "ENEMY_STATE";
     inline static const std::string ENTRANCE_DISCOVERED = "ENTRANCE_DISCOVERED";
     inline static const std::string GAME_COMPLETE = "GAME_COMPLETE";

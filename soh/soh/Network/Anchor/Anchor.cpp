@@ -137,6 +137,8 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_EnemyDamage(payload);
             else if (packetType == ENEMY_DEFEATED)
                 HandlePacket_EnemyDefeated(payload);
+            else if (packetType == ENEMY_MOVEMENT)
+                HandlePacket_EnemyMovement(payload);
             else if (packetType == ENEMY_STATE)
                 HandlePacket_EnemyState(payload);
             else if (packetType == REQUEST_ENEMY_STATE)

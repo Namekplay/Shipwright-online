@@ -42,6 +42,7 @@ void GameInteractor_ExecuteOnActorUpdate(void* actor);
 void GameInteractor_ExecuteOnActorKill(void* actor);
 void GameInteractor_ExecuteOnActorDestroy(void* actor);
 void GameInteractor_ExecuteOnEnemyDefeat(void* actor);
+void GameInteractor_ExecuteOnCollisionDamage(void* victim, void* attacker, uint32_t dmgFlags, uint8_t damage);
 void GameInteractor_ExecuteOnBossDefeat(void* actor);
 void GameInteractor_ExecuteOnTimestamp(u8 item);
 void GameInteractor_ExecuteOnPlayerBonk();

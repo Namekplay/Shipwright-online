@@ -3030,6 +3030,10 @@ void CollisionCheck_ApplyDamage(PlayState* play, CollisionCheckContext* colChkCt
     if (CVarGetInteger(CVAR_ENHANCEMENT("IvanCoopModeEnabled"), 0)) {
         collider->actor->colChkInfo.damage *= GET_PLAYER(play)->ivanDamageMultiplier;
     }
+
+    // SOH [Anchor] Let online play see every hit as it lands, with who landed it and with what
+    GameInteractor_ExecuteOnCollisionDamage(collider->actor, collider->ac, info->acHitInfo->toucher.dmgFlags,
+                                            info->acHitInfo->toucher.damage);
 }
 
 /**

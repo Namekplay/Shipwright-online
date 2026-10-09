@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <set>
+#include <vector>
 #include <string>
 
 extern "C" {
@@ -41,8 +42,12 @@ void EnKusa_SetupCut(EnKusa* enKusa);
 /**
  * Object Sync (pots, grass, crates, rocks)
  *
- * When any player breaks, cuts or picks up a pot, crate, rock or bush, it breaks for every other player in the same
- * scene (with the normal break effect and sound). Players entering the scene later are told which ones are gone.
+ * When any player breaks or cuts a pot, crate, rock or bush, it breaks for every other player in the same scene (with
+ * the normal break effect and sound). Players entering the scene later are told which ones are gone.
+ *
+ * When a player picks one up, it doesn't break for everyone else: it's handed to that player's character in their
+ * games, so they see it lifted and carried. When it's thrown or put down, everyone else gets where it was let go and
+ * how fast it was thrown, so it flies the same way and breaks where it lands in their game too.
  *
  * Objects are matched across games the same way enemies are: scene + actor id + params + spawn position.
  *
@@ -54,6 +59,8 @@ void EnKusa_SetupCut(EnKusa* enKusa);
  * are not synced, so nobody loses their chance at the token.
  *
  * OBJECT_BROKEN        - Broadcast to the room when an object breaks in your game
+ * OBJECT_PICKED_UP     - Broadcast to the room when you pick an object up
+ * OBJECT_RELEASED      - Broadcast to the room when you throw or put down an object you picked up
  * REQUEST_OBJECT_STATE - Broadcast to the room when you enter a scene, asking for that scene's broken objects
  * OBJECT_STATE         - Reply sent directly to the player who asked
  */
@@ -64,6 +71,8 @@ struct ObjectSyncData {
     std::string key;
     bool handled = false;   // Already broken in this game (by us or by a sync); ignore further changes
     bool wasIntact = false; // Was it sitting in its normal untouched state at the end of the last update
+    bool heldByMe = false;  // We picked it up and told everyone; tell them again when we let go
+    uint32_t heldByClient = 0; // Another player is carrying it (their character holds it in our game)
 };
 static ObjectExtension::Register<ObjectSyncData> ObjectSyncDataRegister;
 
@@ -129,6 +138,59 @@ bool KeyIsForScene(const std::string& key, s16 sceneNum) {
 
 bool ShouldSyncObjects() {
     return Anchor::Instance != nullptr && Anchor::Instance->roomState.syncObjects && Anchor::Instance->IsSaveLoaded();
+}
+
+// Another player's character in our game, if they're here with us right now
+Player* GetDummyInScene(uint32_t clientId) {
+    auto it = Anchor::Instance->clients.find(clientId);
+    if (it == Anchor::Instance->clients.end()) {
+        return nullptr;
+    }
+
+    AnchorClient& client = it->second;
+    if (client.self || !client.online || !client.isSaveLoaded || client.sceneNum != gPlayState->sceneNum ||
+        client.player == nullptr || client.player->actor.update == NULL) {
+        return nullptr;
+    }
+
+    return client.player;
+}
+
+// Find the object another player is carrying in our game
+Actor* FindRemoteHeldObjectByKey(const std::string& key) {
+    static const u8 categories[] = { ACTORCAT_PROP, ACTORCAT_BG };
+
+    for (u8 category : categories) {
+        for (Actor* actor = gPlayState->actorCtx.actorLists[category].head; actor != NULL; actor = actor->next) {
+            if (actor->update == NULL || !IsSyncedObjectType(actor)) {
+                continue;
+            }
+
+            ObjectSyncData* data = ObjectExtension::GetInstance().Get<ObjectSyncData>(actor);
+            if (data != nullptr && data->heldByClient != 0 && data->key == key) {
+                return actor;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+// Take an object out of another player's character's hands in our game. Only touches the character if it's still
+// the one we handed the object to (it may have been respawned since).
+void ReleaseFromDummy(Actor* actor, ObjectSyncData* data) {
+    Player* dummy = GetDummyInScene(data->heldByClient);
+    if (dummy != nullptr && actor->parent == &dummy->actor) {
+        if (dummy->heldActor == actor) {
+            dummy->heldActor = NULL;
+        }
+        if (dummy->actor.child == actor) {
+            dummy->actor.child = NULL;
+        }
+    }
+
+    actor->parent = NULL;
+    data->heldByClient = 0;
 }
 
 // Find a loaded, untouched object with this key that hasn't already been handled
@@ -270,11 +332,159 @@ void Anchor::RegisterObjectSyncHooks() {
             if (!Regrows(actor)) {
                 sBrokenObjects.insert(data->key);
             }
-            SendPacket_ObjectBroken(data->key, !Regrows(actor));
+
+            Player* self = GET_PLAYER(gPlayState);
+            if (self != nullptr && actor->parent == &self->actor) {
+                // We picked it up: everyone else sees our character lift and carry it
+                data->heldByMe = true;
+                SendPacket_ObjectPickedUp(data->key);
+            } else {
+                SendPacket_ObjectBroken(data->key, !Regrows(actor));
+            }
+        }
+
+        // We let go of something we picked up: send where and how hard, so it flies the same way for everyone
+        if (data->heldByMe && actor->parent == NULL) {
+            data->heldByMe = false;
+            SendPacket_ObjectReleased(data->key, actor);
         }
 
         data->wasIntact = intact;
     });
+
+    // Something another player is carrying in our game: make sure their character is still here and still holding it.
+    // If not (they left, or their character was respawned), let it drop.
+    COND_HOOK(ShouldActorUpdate, isConnected, [&](void* refActor, bool* should) {
+        Actor* actor = (Actor*)refActor;
+        if (!IsSyncedObjectType(actor)) {
+            return;
+        }
+
+        ObjectSyncData* data = ObjectExtension::GetInstance().Get<ObjectSyncData>(actor);
+        if (data == nullptr || data->heldByClient == 0) {
+            return;
+        }
+
+        Player* dummy = GetDummyInScene(data->heldByClient);
+        if (dummy == nullptr || actor->parent != &dummy->actor || dummy->heldActor != actor) {
+            ReleaseFromDummy(actor, data);
+            actor->speedXZ = 0.0f;
+            actor->velocity.y = 0.0f;
+        }
+    });
+
+    // An object another player is carrying is going away in our game: make sure their character lets go of it, so it
+    // isn't left holding something that no longer exists
+    COND_HOOK(OnActorDestroy, isConnected, [&](void* refActor) {
+        Actor* actor = (Actor*)refActor;
+        if (!IsSyncedObjectType(actor)) {
+            return;
+        }
+
+        ObjectSyncData* data = ObjectExtension::GetInstance().Get<ObjectSyncData>(actor);
+        if (data != nullptr && data->heldByClient != 0) {
+            ReleaseFromDummy(actor, data);
+        }
+    });
+}
+
+void Anchor::SendPacket_ObjectPickedUp(const std::string& key) {
+    if (!ShouldSyncObjects()) {
+        return;
+    }
+
+    nlohmann::json payload;
+    payload["type"] = OBJECT_PICKED_UP;
+    payload["sceneNum"] = gPlayState->sceneNum;
+    payload["key"] = key;
+
+    SendJsonToRemote(payload);
+}
+
+void Anchor::HandlePacket_ObjectPickedUp(nlohmann::json payload) {
+    if (!ShouldSyncObjects() || !payload.contains("clientId")) {
+        return;
+    }
+
+    s16 sceneNum = payload["sceneNum"].get<s16>();
+    std::string key = payload["key"].get<std::string>();
+    if (sceneNum != gPlayState->sceneNum || !KeyIsForScene(key, sceneNum)) {
+        return;
+    }
+
+    sBrokenObjects.insert(key);
+
+    Actor* actor = FindIntactObjectByKey(key);
+    if (actor == nullptr) {
+        return;
+    }
+
+    ObjectSyncData* data = ObjectExtension::GetInstance().Get<ObjectSyncData>(actor);
+    uint32_t clientId = payload["clientId"].get<uint32_t>();
+    Player* dummy = GetDummyInScene(clientId);
+
+    if (dummy == nullptr || dummy->heldActor != NULL) {
+        // Can't show it in their hands (they aren't here in our game): it just quietly goes away, no shattering
+        BreakObject(actor, true);
+        return;
+    }
+
+    // Hand it to their character, the same way the game does when you lift something
+    data->handled = true;
+    data->wasIntact = false;
+    data->heldByClient = clientId;
+    dummy->heldActor = actor;
+    dummy->actor.child = actor;
+    actor->parent = &dummy->actor;
+    actor->bgCheckFlags &= 0xFF00;
+}
+
+void Anchor::SendPacket_ObjectReleased(const std::string& key, Actor* actor) {
+    if (!ShouldSyncObjects()) {
+        return;
+    }
+
+    nlohmann::json payload;
+    payload["type"] = OBJECT_RELEASED;
+    payload["sceneNum"] = gPlayState->sceneNum;
+    payload["key"] = key;
+    payload["pos"] = { actor->world.pos.x, actor->world.pos.y, actor->world.pos.z };
+    payload["rotY"] = actor->world.rot.y;
+    payload["speedXZ"] = actor->speedXZ;
+    payload["velocityY"] = actor->velocity.y;
+
+    SendJsonToRemote(payload);
+}
+
+void Anchor::HandlePacket_ObjectReleased(nlohmann::json payload) {
+    if (!ShouldSyncObjects()) {
+        return;
+    }
+
+    s16 sceneNum = payload["sceneNum"].get<s16>();
+    std::string key = payload["key"].get<std::string>();
+    if (sceneNum != gPlayState->sceneNum) {
+        return;
+    }
+
+    Actor* actor = FindRemoteHeldObjectByKey(key);
+    if (actor == nullptr) {
+        return;
+    }
+
+    ObjectSyncData* data = ObjectExtension::GetInstance().Get<ObjectSyncData>(actor);
+    ReleaseFromDummy(actor, data);
+
+    // Let go exactly where and how they did; the object's own code then flies, lands and breaks like normal
+    auto pos = payload.value("pos", std::vector<f32>{});
+    if (pos.size() == 3) {
+        actor->world.pos.x = pos[0];
+        actor->world.pos.y = pos[1];
+        actor->world.pos.z = pos[2];
+    }
+    actor->world.rot.y = actor->shape.rot.y = payload.value("rotY", actor->world.rot.y);
+    actor->speedXZ = payload.value("speedXZ", 0.0f);
+    actor->velocity.y = payload.value("velocityY", 0.0f);
 }
 
 void Anchor::SendPacket_ObjectBroken(const std::string& key, bool remember) {

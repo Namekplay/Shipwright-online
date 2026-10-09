@@ -190,6 +190,10 @@ void GameInteractor_ExecuteOnEnemyDefeat(void* actor) {
     GameInteractor::Instance->ExecuteHooksForFilter<GameInteractor::OnEnemyDefeat>(actor);
 }
 
+void GameInteractor_ExecuteOnCollisionDamage(void* victim, void* attacker, uint32_t dmgFlags, uint8_t damage) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnCollisionDamage>(victim, attacker, dmgFlags, damage);
+}
+
 void GameInteractor_ExecuteOnBossDefeat(void* actor) {
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnBossDefeat>(actor);
     GameInteractor::Instance->ExecuteHooksForID<GameInteractor::OnBossDefeat>(((Actor*)actor)->id, actor);

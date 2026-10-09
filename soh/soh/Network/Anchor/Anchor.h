@@ -99,12 +99,15 @@ class Anchor : public Network {
     void HandlePacket_DisableAnchor(nlohmann::json payload);
     void HandlePacket_EnemyDamage(nlohmann::json payload);
     void HandlePacket_EnemyDefeated(nlohmann::json payload);
+    void HandlePacket_EnemyHit(nlohmann::json payload);
     void HandlePacket_EnemyMovement(nlohmann::json payload);
     void HandlePacket_EnemyState(nlohmann::json payload);
     void HandlePacket_EntranceDiscovered(nlohmann::json payload);
     void HandlePacket_GameComplete(nlohmann::json payload);
     void HandlePacket_GiveItem(nlohmann::json payload);
     void HandlePacket_ObjectBroken(nlohmann::json payload);
+    void HandlePacket_ObjectPickedUp(nlohmann::json payload);
+    void HandlePacket_ObjectReleased(nlohmann::json payload);
     void HandlePacket_ObjectState(nlohmann::json payload);
     void HandlePacket_OcarinaSfx(nlohmann::json payload);
     void HandlePacket_PlayerSfx(nlohmann::json payload);
@@ -135,6 +138,7 @@ class Anchor : public Network {
     inline static const std::string DISABLE_ANCHOR = "DISABLE_ANCHOR";
     inline static const std::string ENEMY_DAMAGE = "ENEMY_DAMAGE";
     inline static const std::string ENEMY_DEFEATED = "ENEMY_DEFEATED";
+    inline static const std::string ENEMY_HIT = "ENEMY_HIT";
     inline static const std::string ENEMY_MOVEMENT = "ENEMY_MOVEMENT";
     inline static const std::string ENEMY_STATE = "ENEMY_STATE";
     inline static const std::string ENTRANCE_DISCOVERED = "ENTRANCE_DISCOVERED";
@@ -142,6 +146,8 @@ class Anchor : public Network {
     inline static const std::string GIVE_ITEM = "GIVE_ITEM";
     inline static const std::string HANDSHAKE = "HANDSHAKE";
     inline static const std::string OBJECT_BROKEN = "OBJECT_BROKEN";
+    inline static const std::string OBJECT_PICKED_UP = "OBJECT_PICKED_UP";
+    inline static const std::string OBJECT_RELEASED = "OBJECT_RELEASED";
     inline static const std::string OBJECT_STATE = "OBJECT_STATE";
     inline static const std::string OCARINA_SFX = "OCARINA_SFX";
     inline static const std::string PLAYER_SFX = "PLAYER_SFX";
@@ -181,13 +187,15 @@ class Anchor : public Network {
 
     void SendPacket_ClearTeamState(std::string teamId);
     void SendPacket_DamagePlayer(u32 clientId, u8 damageEffect, u8 damage);
-    void SendPacket_EnemyDamage(const std::string& key, s16 damage);
-    void SendPacket_EnemyDefeated(const std::string& key);
+    void SendPacket_EnemyDefeated(const std::string& key, u32 dmgFlags);
+    void SendPacket_EnemyHit(const std::string& key, u32 dmgFlags, u8 damage);
     void SendPacket_EntranceDiscovered(u16 entranceIndex);
     void SendPacket_GameComplete();
     void SendPacket_GiveItem(u16 modId, s16 getItemId);
     void SendPacket_Handshake();
     void SendPacket_ObjectBroken(const std::string& key, bool remember);
+    void SendPacket_ObjectPickedUp(const std::string& key);
+    void SendPacket_ObjectReleased(const std::string& key, Actor* actor);
     void SendPacket_OcarinaSfx(uint8_t note, float modulator, int8_t bend);
     void SendPacket_PlayerSfx(u16 sfxId);
     void SendPacket_PlayerUpdate();

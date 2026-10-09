@@ -177,7 +177,13 @@ void DummyPlayer_Update(Actor* actor, PlayState* play) {
 
     actor->flags &= ~ACTOR_FLAG_LOCK_ON_DISABLED;
 
-    if (player->cylinder.base.acFlags & AC_HIT && player->invincibilityTimer == 0) {
+    // Only our own attacks count as PvP hits. With enemy sync on, our copies of enemies can swing at other players'
+    // characters too (and replayed hits are owned by them); their real game already handles those, so ignore them.
+    Actor* attacker = player->cylinder.base.ac;
+    bool hitByUs = attacker != NULL && attacker->category != ACTORCAT_ENEMY && attacker->category != ACTORCAT_BOSS &&
+                   !(attacker->id == ACTOR_EN_OE2 && attacker->update == DummyPlayer_Update);
+
+    if (player->cylinder.base.acFlags & AC_HIT && player->invincibilityTimer == 0 && hitByUs) {
         Anchor::Instance->SendPacket_DamagePlayer(client.clientId, player->actor.colChkInfo.damageEffect,
                                                   player->actor.colChkInfo.damage);
         if (player->actor.colChkInfo.damageEffect == DUMMY_PLAYER_HIT_RESPONSE_STUN) {

@@ -41,6 +41,7 @@ DEFINE_HOOK(OnActorUpdate, (void* actor));
 DEFINE_HOOK(OnActorKill, (void* actor));
 DEFINE_HOOK(OnActorDestroy, (void* actor));
 DEFINE_HOOK(OnEnemyDefeat, (void* actor));
+DEFINE_HOOK(OnCollisionDamage, (void* victim, void* attacker, uint32_t dmgFlags, uint8_t damage));
 DEFINE_HOOK(OnBossDefeat, (void* actor));
 DEFINE_HOOK(OnTimestamp, (u8 item));
 DEFINE_HOOK(OnPlayerBonk, ());

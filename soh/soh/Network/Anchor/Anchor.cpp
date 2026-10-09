@@ -137,6 +137,8 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_EnemyDamage(payload);
             else if (packetType == ENEMY_DEFEATED)
                 HandlePacket_EnemyDefeated(payload);
+            else if (packetType == ENEMY_HIT)
+                HandlePacket_EnemyHit(payload);
             else if (packetType == ENEMY_MOVEMENT)
                 HandlePacket_EnemyMovement(payload);
             else if (packetType == ENEMY_STATE)
@@ -151,6 +153,10 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_GiveItem(payload);
             else if (packetType == OBJECT_BROKEN)
                 HandlePacket_ObjectBroken(payload);
+            else if (packetType == OBJECT_PICKED_UP)
+                HandlePacket_ObjectPickedUp(payload);
+            else if (packetType == OBJECT_RELEASED)
+                HandlePacket_ObjectReleased(payload);
             else if (packetType == OBJECT_STATE)
                 HandlePacket_ObjectState(payload);
             else if (packetType == REQUEST_OBJECT_STATE)

@@ -8,9 +8,9 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
-#include <vector>
 #include <map>
 #include <string>
+#include <vector>
 
 extern "C" {
 #include "macros.h"
@@ -20,15 +20,27 @@ extern PlayState* gPlayState;
 }
 
 /**
- * Enemy Sync (shared damage and kills)
+ * Enemy Sync
  *
- * When any player defeats an enemy, that same enemy is removed from the game of every other player who is in the same
- * scene, and players who enter a scene later are told which enemies are already dead there.
+ * Every player's game still runs its own copy of each enemy. These pieces keep the copies matching:
  *
- * When any player damages an enemy, the same enemy loses that much health in everyone else's game too, so players
- * fighting together wear it down together. A synced hit never takes an enemy below 1 health: the final blow always
- * happens in someone's own game, which then removes it for everyone through ENEMY_DEFEATED. That way every enemy dies
- * through its normal death code at least once, and nobody is left with a zero-health enemy that never dies.
+ * Perception: an enemy reacts to whichever player is closest to it, not only to you. A Deku Baba pops up on your
+ * screen when your friend walks up to it, a Stalfos turns to face whoever it is fighting, and so on. (Enemies that
+ * grab or freeze the player - Like Like, ReDead, Wallmaster, Floormaster, Dead Hand - only react to you, otherwise
+ * they could grab you from across the room.)
+ *
+ * Movement: for each enemy, the player standing closest to it is in charge of it. That player's game runs the enemy
+ * normally and sends where it is and which way it faces ~10 times a second. Everyone else's copy is pulled toward that
+ * position each frame (or snapped there if it's far off). Control passes automatically when someone else gets closer.
+ *
+ * Hits: when you hit an enemy, the hit itself (what weapon, how hard) is sent to everyone else, and their game replays
+ * it on their copy of the enemy as a real hit from your character. So they see the same flinch, knockback, stun or
+ * burn, and when the hit is the killing blow they see the enemy's own death animation.
+ *
+ * Kills: when an enemy dies in someone's game, it's marked dead for everyone in the scene. If it's still alive in your
+ * game (a replayed hit missed because it was in a slightly different pose), the killing blow is replayed on it with
+ * its health set to 1, so it still dies its normal death. Only if that fails does it vanish in a blue flame.
+ * Players entering a scene later are told which enemies are already dead there and those don't spawn.
  *
  * Enemies are identified across games by: scene + actor id + params + spawn (home) position. Enemies placed in the
  * scene/room data spawn at the exact same position for everyone, so this key matches between games. Enemies spawned
@@ -37,26 +49,30 @@ extern PlayState* gPlayState;
  * The list of dead enemies lasts while you stay in the scene (moving between rooms of a dungeon included) and is
  * cleared when you go to a different scene, so enemies respawn the same way they normally would.
  *
- * ENEMY_DEFEATED      - Broadcast to the room when you defeat an enemy
+ * ENEMY_HIT           - Broadcast to the room when you land a hit on an enemy
+ * ENEMY_DEFEATED      - Broadcast to the room when an enemy dies in your game
  * REQUEST_ENEMY_STATE - Broadcast to the room when you enter a scene, asking for that scene's dead enemies
  * ENEMY_STATE         - Reply sent directly to the player who asked
- * ENEMY_DAMAGE        - Broadcast to the room when an enemy loses health in your game
- * ENEMY_MOVEMENT      - Sent ~10 times a second to players in the same scene with the positions of the enemies you
- *                       are running (see below)
- *
- * Enemy movement: every game still runs its own enemy AI, but for each enemy the player standing closest to it is in
- * charge of it. That player's game runs the enemy normally and sends out where it is and which way it faces. Everyone
- * else's copy of that enemy is pulled toward that position each frame (or snapped there if it's far off). The enemy
- * then fights whoever is closest exactly like normal, and everyone else sees it in the same place. When a different
- * player becomes the closest, control passes to them automatically.
+ * ENEMY_MOVEMENT      - Sent ~10 times a second to players in the same scene with the enemies you're in charge of
  */
 
 namespace {
 
+struct PendingHit {
+    u32 dmgFlags;
+    u8 damage;
+    uint32_t clientId;
+};
+
 struct EnemySyncData {
     std::string key;
     bool handled = false; // Already defeated in this game (by us or by a sync), don't touch it again
-    s16 lastHealth = -1;  // Health seen at the end of the last update, -1 until the first update
+
+    // Hits
+    u32 lastHitSentFrame = 0;            // Only send one hit per enemy per frame (multi-part colliders report several)
+    u32 lastDmgFlags = 0;                // What we last hit it with, sent along with ENEMY_DEFEATED
+    std::vector<PendingHit> pendingHits; // Other players' hits waiting to be replayed on our copy
+    u32 killStartFrame = 0;              // When we started replaying someone else's killing blow, 0 = not started
 
     // Movement sync
     bool isMovementAuthority = true; // We're the closest player, so our game runs this enemy for everyone
@@ -68,18 +84,54 @@ struct EnemySyncData {
 };
 static ObjectExtension::Register<EnemySyncData> EnemySyncDataRegister;
 
-// key -> silent (true when learned from ENEMY_STATE on scene entry, so the enemy disappears without an effect)
-static std::map<std::string, bool> sDefeatedEnemies;
+struct DefeatInfo {
+    bool silent = false;   // Died before we arrived in the scene: just don't be there, no death at all
+    u32 dmgFlags = 0;      // What the killing blow was, to replay it
+    uint32_t clientId = 0; // Who landed it
+};
+
+static std::map<std::string, DefeatInfo> sDefeatedEnemies;
 static s16 sEnemySyncSceneNum = -1;
 static Vec3f sZeroVec = { 0.0f, 0.0f, 0.0f };
 
 // Movement sync tuning
-constexpr u32 ENEMY_MOVEMENT_SEND_INTERVAL = 2;   // Send every 2 game updates (~10 times a second)
+constexpr u32 ENEMY_MOVEMENT_SEND_INTERVAL = 2;        // Send every 2 game updates (~10 times a second)
 constexpr f32 ENEMY_MOVEMENT_AUTHORITY_MARGIN = 50.0f; // Near-ties: both players run the enemy themselves
-constexpr u32 ENEMY_MOVEMENT_STALE_FRAMES = 10;   // Stop following a position older than ~half a second
-constexpr f32 ENEMY_MOVEMENT_SNAP_DISTANCE = 300.0f; // Further off than this: jump straight there
-constexpr f32 ENEMY_MOVEMENT_LERP = 0.5f;          // Otherwise close half the gap each frame
+constexpr u32 ENEMY_MOVEMENT_STALE_FRAMES = 10;        // Stop following a position older than ~half a second
+constexpr f32 ENEMY_MOVEMENT_SNAP_DISTANCE = 300.0f;   // Further off than this: jump straight there
+constexpr f32 ENEMY_MOVEMENT_LERP = 0.5f;              // Otherwise close half the gap each frame
 static u32 sEnemyMovementFrameCounter = 0;
+
+// Killing blow replay tuning (in game updates, ~20 per second)
+constexpr u32 KILL_RETRY_INTERVAL = 10;  // Re-send the killing blow every half second while it's still alive
+constexpr u32 KILL_FALLBACK_FRAMES = 40; // Still alive after 2 seconds: give up and use the blue flame
+constexpr u32 KILL_GIVE_UP_FRAMES = 200; // Stuck mid-death for 10 seconds: just remove it
+constexpr size_t MAX_PENDING_HITS = 4;
+
+// Replayed hits are real attack colliders owned by the other player's character. The enemy reads the collider back
+// the frame after it's hit, so each one has to stay alive for a couple of frames; a small ring of them is plenty.
+constexpr size_t REPLAY_COLLIDER_COUNT = 16;
+static ColliderCylinder sReplayColliders[REPLAY_COLLIDER_COUNT];
+static size_t sReplayColliderNext = 0;
+static ColliderCylinderInit sReplayColliderInit = {
+    {
+        COLTYPE_NONE,
+        AT_ON | AT_TYPE_PLAYER,
+        AC_NONE,
+        OC1_NONE,
+        OC2_TYPE_PLAYER,
+        COLSHAPE_CYLINDER,
+    },
+    {
+        ELEMTYPE_UNK2,
+        { DMG_SLASH_MASTER, 0x00, 0x02 },
+        { 0x00000000, 0x00, 0x00 },
+        TOUCH_ON | TOUCH_SFX_NORMAL,
+        BUMP_NONE,
+        OCELEM_NONE,
+    },
+    { 35, 70, -35, { 0, 0, 0 } },
+};
 
 std::string MakeEnemyKey(Actor* actor) {
     return std::to_string(gPlayState->sceneNum) + ":" + std::to_string(actor->id) + ":" +
@@ -128,11 +180,111 @@ bool IsEnemyMovementExcluded(Actor* actor) {
     }
 }
 
+// Enemies that must only ever notice the local player. These grab, swallow or freeze "the player" as soon as they
+// think the player is close, and the player they act on is always you - so if they noticed a friend standing next to
+// them, they would grab or freeze you from wherever you are.
+bool IsEnemyPerceptionExcluded(Actor* actor) {
+    if (IsEnemyMovementExcluded(actor)) {
+        return true;
+    }
+
+    switch (actor->id) {
+        case ACTOR_EN_RR:       // Like Like
+        case ACTOR_EN_RD:       // ReDead / Gibdo (scream freezes the player)
+        case ACTOR_EN_FLOORMAS: // Floormaster
+        case ACTOR_EN_DH:       // Dead Hand
+        case ACTOR_EN_DHA:      // Dead Hand's hands
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsDummyPlayer(Actor* actor) {
+    return actor != nullptr && actor->id == ACTOR_EN_OE2 && actor->update == DummyPlayer_Update;
+}
+
+// Another player's character in our game, if they're here with us right now
+Player* GetDummyInScene(uint32_t clientId) {
+    auto it = Anchor::Instance->clients.find(clientId);
+    if (it == Anchor::Instance->clients.end()) {
+        return nullptr;
+    }
+
+    AnchorClient& client = it->second;
+    if (client.self || !client.online || !client.isSaveLoaded || client.sceneNum != gPlayState->sceneNum ||
+        client.player == nullptr || client.player->actor.update == NULL) {
+        return nullptr;
+    }
+
+    return client.player;
+}
+
 bool IsGrabbingLocalPlayer(Actor* actor) {
     Player* player = GET_PLAYER(gPlayState);
     return player != nullptr &&
            ((player->stateFlags2 & PLAYER_STATE2_GRABBED_BY_ENEMY) || player->actor.parent == actor ||
             actor->child == &player->actor);
+}
+
+bool ShouldSyncEnemies() {
+    return Anchor::Instance != nullptr && Anchor::Instance->roomState.syncEnemies && Anchor::Instance->IsSaveLoaded();
+}
+
+bool ShouldSyncEnemyMovement() {
+    return ShouldSyncEnemies() && Anchor::Instance->roomState.syncEnemyMovement;
+}
+
+// Make the enemy react to whichever player is closest, by pointing its "distance/direction to the player" values
+// at that player before it updates.
+void ApplyNearestPlayerPerception(Actor* actor) {
+    Actor* nearest = nullptr;
+    f32 nearestDistSq = actor->xyzDistToPlayerSq;
+
+    for (auto& [clientId, client] : Anchor::Instance->clients) {
+        Player* dummy = GetDummyInScene(clientId);
+        if (dummy == nullptr) {
+            continue;
+        }
+
+        f32 xz = Actor_WorldDistXZToActor(actor, &dummy->actor);
+        f32 y = Actor_HeightDiff(actor, &dummy->actor);
+        f32 distSq = SQ(xz) + SQ(y);
+        if (distSq < nearestDistSq) {
+            nearestDistSq = distSq;
+            nearest = &dummy->actor;
+        }
+    }
+
+    if (nearest == nullptr) {
+        return; // We're the closest; the game already set everything up for us
+    }
+
+    actor->xzDistToPlayer = Actor_WorldDistXZToActor(actor, nearest);
+    actor->yDistToPlayer = Actor_HeightDiff(actor, nearest);
+    actor->xyzDistToPlayerSq = nearestDistSq;
+    actor->yawTowardsPlayer = Actor_WorldYawTowardActor(actor, nearest);
+}
+
+// Replay another player's hit on our copy of the enemy: a real attack, from their character, at the enemy
+void FireReplayHit(Actor* actor, const PendingHit& hit) {
+    Player* attacker = GetDummyInScene(hit.clientId);
+    if (attacker == nullptr) {
+        return;
+    }
+
+    ColliderCylinder* collider = &sReplayColliders[sReplayColliderNext];
+    sReplayColliderNext = (sReplayColliderNext + 1) % REPLAY_COLLIDER_COUNT;
+
+    Collider_InitCylinder(gPlayState, collider);
+    Collider_SetCylinder(gPlayState, collider, &attacker->actor, &sReplayColliderInit);
+    collider->info.toucher.dmgFlags = hit.dmgFlags != 0 ? hit.dmgFlags : DMG_SLASH_MASTER;
+    collider->info.toucher.damage = hit.damage;
+    collider->dim.pos.x = (s16)actor->focus.pos.x;
+    collider->dim.pos.y = (s16)actor->focus.pos.y;
+    collider->dim.pos.z = (s16)actor->focus.pos.z;
+
+    CollisionCheck_SetAT(gPlayState, &gPlayState->colChkCtx, &collider->base);
 }
 
 // Pull our copy of an enemy toward where the player running it says it is
@@ -182,10 +334,6 @@ Actor* FindLiveEnemyByKey(const std::string& key) {
     return nullptr;
 }
 
-bool ShouldSyncEnemies() {
-    return Anchor::Instance != nullptr && Anchor::Instance->roomState.syncEnemies && Anchor::Instance->IsSaveLoaded();
-}
-
 } // namespace
 
 void Anchor::RegisterEnemySyncHooks() {
@@ -197,9 +345,11 @@ void Anchor::RegisterEnemySyncHooks() {
             return;
         }
 
-        std::string key = MakeEnemyKey(actor);
-        bool alreadyDefeated = roomState.syncEnemies && !IsEnemySyncExcluded(actor) && sDefeatedEnemies.contains(key);
-        ObjectExtension::GetInstance().Set<EnemySyncData>(actor, EnemySyncData{ key, alreadyDefeated });
+        EnemySyncData data;
+        data.key = MakeEnemyKey(actor);
+        data.handled = roomState.syncEnemies && !IsEnemySyncExcluded(actor) && sDefeatedEnemies.contains(data.key);
+        bool alreadyDefeated = data.handled;
+        ObjectExtension::GetInstance().Set<EnemySyncData>(actor, std::move(data));
 
         if (alreadyDefeated) {
             *should = false;
@@ -218,7 +368,7 @@ void Anchor::RegisterEnemySyncHooks() {
         SendPacket_RequestEnemyState();
     });
 
-    // We defeated an enemy: remember it and tell everyone else
+    // An enemy died in our game (to our hit or a replayed one): remember it and tell everyone else
     COND_HOOK(OnEnemyDefeat, isConnected, [&](void* refActor) {
         Actor* actor = (Actor*)refActor;
         if (!ShouldSyncEnemies() || isProcessingIncomingPacket || IsEnemySyncExcluded(actor)) {
@@ -231,14 +381,38 @@ void Anchor::RegisterEnemySyncHooks() {
         }
 
         data->handled = true;
-        sDefeatedEnemies[data->key] = false;
-        SendPacket_EnemyDefeated(data->key);
+        data->pendingHits.clear();
+        sDefeatedEnemies.emplace(data->key, DefeatInfo{ false, data->lastDmgFlags, ownClientId });
+        SendPacket_EnemyDefeated(data->key, data->lastDmgFlags);
     });
 
-    // Watch each enemy's health after it updates. If it dropped, tell everyone else how much.
-    COND_HOOK(OnActorUpdate, isConnected, [&](void* refActor) {
+    // A hit landed on an enemy. If we (our sword, arrows, bombs...) landed it, send it to everyone so they can replay
+    // it. Hits from other players' characters are the replays themselves, so those are never sent back out.
+    COND_HOOK(OnCollisionDamage, isConnected,
+              [&](void* refVictim, void* refAttacker, uint32_t dmgFlags, uint8_t damage) {
+                  Actor* victim = (Actor*)refVictim;
+                  Actor* attacker = (Actor*)refAttacker;
+                  if (!ShouldSyncEnemies() || victim == nullptr || victim->category != ACTORCAT_ENEMY ||
+                      attacker == nullptr || IsDummyPlayer(attacker) || attacker->category == ACTORCAT_ENEMY ||
+                      attacker->category == ACTORCAT_BOSS || IsEnemySyncExcluded(victim)) {
+                      return;
+                  }
+
+                  EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(victim);
+                  if (data == nullptr || data->handled || data->lastHitSentFrame == gPlayState->gameplayFrames) {
+                      return;
+                  }
+
+                  data->lastHitSentFrame = gPlayState->gameplayFrames;
+                  data->lastDmgFlags = dmgFlags;
+                  SendPacket_EnemyHit(data->key, dmgFlags, damage);
+              });
+
+    // Right before an enemy updates: let it notice whichever player is closest
+    COND_HOOK(ShouldActorUpdate, isConnected, [&](void* refActor, bool* should) {
         Actor* actor = (Actor*)refActor;
-        if (actor->category != ACTORCAT_ENEMY || !roomState.syncEnemies) {
+        if (actor->category != ACTORCAT_ENEMY || actor->update == NULL || !ShouldSyncEnemyMovement() ||
+            IsEnemyPerceptionExcluded(actor)) {
             return;
         }
 
@@ -247,19 +421,32 @@ void Anchor::RegisterEnemySyncHooks() {
             return;
         }
 
-        s16 health = actor->colChkInfo.health;
-        if (data->lastHealth > health && !IsEnemySyncExcluded(actor)) {
-            SendPacket_EnemyDamage(data->key, data->lastHealth - health);
-        }
-        data->lastHealth = health;
+        ApplyNearestPlayerPerception(actor);
+    });
 
-        // Then line our copy up with the player who is running this enemy
+    // After an enemy updates: replay other players' hits on it, then line it up with whoever is running it
+    COND_HOOK(OnActorUpdate, isConnected, [&](void* refActor) {
+        Actor* actor = (Actor*)refActor;
+        if (actor->category != ACTORCAT_ENEMY || !roomState.syncEnemies) {
+            return;
+        }
+
+        EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+        if (data == nullptr || data->handled || IsEnemySyncExcluded(actor)) {
+            return;
+        }
+
+        if (!data->pendingHits.empty()) {
+            FireReplayHit(actor, data->pendingHits.front());
+            data->pendingHits.erase(data->pendingHits.begin());
+        }
+
         if (roomState.syncEnemyMovement && !IsEnemyMovementExcluded(actor)) {
             ApplyEnemyMovement(actor, data);
         }
     });
 
-    // Remove enemies that another player defeated
+    // Enemies that someone else killed: replay the killing blow so it dies its own death here too
     COND_HOOK(ShouldActorUpdate, isConnected, [&](void* refActor, bool* should) {
         if (sDefeatedEnemies.empty() || !roomState.syncEnemies) {
             return;
@@ -281,25 +468,106 @@ void Anchor::RegisterEnemySyncHooks() {
         }
 
         // Don't yank an enemy away while it's holding us (Like Like, ReDead, etc.); try again once we're free
-        Player* player = GET_PLAYER(gPlayState);
-        if (player != nullptr &&
-            ((player->stateFlags2 & PLAYER_STATE2_GRABBED_BY_ENEMY) || player->actor.parent == actor)) {
+        if (IsGrabbingLocalPlayer(actor)) {
             return;
         }
 
-        data->handled = true;
+        const DefeatInfo& info = it->second;
+        u32 now = gPlayState->gameplayFrames;
 
-        if (!it->second) {
-            EffectSsDeadDb_Spawn(gPlayState, &actor->world.pos, &sZeroVec, &sZeroVec, 100, 0, 255, 255, 255, 255, 0, 0,
-                                 255, 1, 9, true);
+        // Died before we arrived: it just isn't here
+        if (info.silent) {
+            data->handled = true;
+            Actor_Kill(actor);
+            *should = false;
+            return;
         }
 
+        bool canReplay = GetDummyInScene(info.clientId) != nullptr;
+
+        if (data->killStartFrame == 0 && canReplay) {
+            // First time: drop it to 1 health and replay the killing blow, then let it update normally
+            data->killStartFrame = now == 0 ? 1 : now;
+            if (actor->colChkInfo.health > 1) {
+                actor->colChkInfo.health = 1;
+            }
+            data->pendingHits.clear();
+            data->pendingHits.push_back({ info.dmgFlags, 2, info.clientId });
+            return;
+        }
+
+        u32 elapsed = data->killStartFrame == 0 ? KILL_GIVE_UP_FRAMES : now - data->killStartFrame;
+
+        if (actor->colChkInfo.health == 0) {
+            // It's playing its death animation. Let it finish, unless it's somehow stuck.
+            if (elapsed < KILL_GIVE_UP_FRAMES) {
+                return;
+            }
+            data->handled = true;
+            Actor_Kill(actor);
+            *should = false;
+            return;
+        }
+
+        if (canReplay && elapsed < KILL_FALLBACK_FRAMES) {
+            // Still alive: the replayed blow may have missed or bounced. Try again every so often.
+            if (elapsed % KILL_RETRY_INTERVAL == 0 && data->pendingHits.empty()) {
+                data->pendingHits.push_back({ info.dmgFlags, 2, info.clientId });
+            }
+            return;
+        }
+
+        // The killing blow couldn't land (immune to that weapon, the killer left, etc.): blue flame as a last resort
+        data->handled = true;
+        EffectSsDeadDb_Spawn(gPlayState, &actor->world.pos, &sZeroVec, &sZeroVec, 100, 0, 255, 255, 255, 255, 0, 0,
+                             255, 1, 9, true);
         Actor_Kill(actor);
         *should = false;
     });
 }
 
-void Anchor::SendPacket_EnemyDefeated(const std::string& key) {
+void Anchor::SendPacket_EnemyHit(const std::string& key, u32 dmgFlags, u8 damage) {
+    if (!ShouldSyncEnemies()) {
+        return;
+    }
+
+    nlohmann::json payload;
+    payload["type"] = ENEMY_HIT;
+    payload["sceneNum"] = gPlayState->sceneNum;
+    payload["key"] = key;
+    payload["dmgFlags"] = dmgFlags;
+    payload["damage"] = damage;
+    payload["quiet"] = true;
+
+    SendJsonToRemote(payload);
+}
+
+void Anchor::HandlePacket_EnemyHit(nlohmann::json payload) {
+    if (!ShouldSyncEnemies() || !payload.contains("clientId")) {
+        return;
+    }
+
+    s16 sceneNum = payload["sceneNum"].get<s16>();
+    if (sceneNum != gPlayState->sceneNum) {
+        return;
+    }
+
+    // Only enemies currently loaded in our game take the hit (an enemy in another room of the dungeon is not loaded)
+    Actor* actor = FindLiveEnemyByKey(payload["key"].get<std::string>());
+    if (actor == nullptr || IsEnemySyncExcluded(actor)) {
+        return;
+    }
+
+    EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+    if (data->pendingHits.size() >= MAX_PENDING_HITS) {
+        return;
+    }
+
+    data->pendingHits.push_back(
+        { payload["dmgFlags"].get<u32>(), payload["damage"].get<u8>(), payload["clientId"].get<uint32_t>() });
+}
+
+void Anchor::SendPacket_EnemyDefeated(const std::string& key, u32 dmgFlags) {
     if (!ShouldSyncEnemies()) {
         return;
     }
@@ -308,6 +576,7 @@ void Anchor::SendPacket_EnemyDefeated(const std::string& key) {
     payload["type"] = ENEMY_DEFEATED;
     payload["sceneNum"] = gPlayState->sceneNum;
     payload["key"] = key;
+    payload["dmgFlags"] = dmgFlags;
 
     SendJsonToRemote(payload);
 }
@@ -327,64 +596,13 @@ void Anchor::HandlePacket_EnemyDefeated(nlohmann::json payload) {
         return;
     }
 
-    sDefeatedEnemies.emplace(key, false);
+    sDefeatedEnemies.emplace(
+        key, DefeatInfo{ false, payload.value("dmgFlags", (u32)0), payload.value("clientId", (uint32_t)0) });
 }
 
-void Anchor::SendPacket_EnemyDamage(const std::string& key, s16 damage) {
-    if (!ShouldSyncEnemies()) {
-        return;
-    }
-
-    nlohmann::json payload;
-    payload["type"] = ENEMY_DAMAGE;
-    payload["sceneNum"] = gPlayState->sceneNum;
-    payload["key"] = key;
-    payload["damage"] = damage;
-    payload["quiet"] = true;
-
-    SendJsonToRemote(payload);
-}
-
+// Older builds of this mod sent health drops instead of hits. Nothing sends this any more; kept so a stray packet
+// from an old build is simply ignored.
 void Anchor::HandlePacket_EnemyDamage(nlohmann::json payload) {
-    if (!ShouldSyncEnemies()) {
-        return;
-    }
-
-    s16 sceneNum = payload["sceneNum"].get<s16>();
-    if (sceneNum != gPlayState->sceneNum) {
-        return;
-    }
-
-    std::string key = payload["key"].get<std::string>();
-    s16 damage = payload["damage"].get<s16>();
-    if (damage <= 0) {
-        return;
-    }
-
-    // Only enemies currently loaded in our game take the hit (an enemy in another room of the dungeon is not loaded)
-    Actor* actor = FindLiveEnemyByKey(key);
-    if (actor == nullptr || IsEnemySyncExcluded(actor)) {
-        return;
-    }
-
-    s16 health = actor->colChkInfo.health;
-    if (health <= 1) {
-        return;
-    }
-
-    s16 newHealth = health - damage;
-    if (newHealth < 1) {
-        newHealth = 1;
-    }
-
-    actor->colChkInfo.health = (u8)newHealth;
-
-    // Remember the new value so our own health watcher doesn't send this hit back out
-    EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
-    data->lastHealth = newHealth;
-
-    // Brief red flash so you can see a teammate landed a hit
-    Actor_SetColorFilter(actor, 0x4000, 255, 0, 8);
 }
 
 void Anchor::SendPacket_RequestEnemyState() {
@@ -410,7 +628,7 @@ void Anchor::HandlePacket_RequestEnemyState(nlohmann::json payload) {
     }
 
     nlohmann::json keys = nlohmann::json::array();
-    for (auto& [key, silent] : sDefeatedEnemies) {
+    for (auto& [key, info] : sDefeatedEnemies) {
         if (KeyIsForScene(key, sceneNum)) {
             keys.push_back(key);
         }
@@ -443,7 +661,7 @@ void Anchor::HandlePacket_EnemyState(nlohmann::json payload) {
         std::string keyStr = key.get<std::string>();
         if (KeyIsForScene(keyStr, sceneNum)) {
             // Silent: these died before we arrived, so just make them not be there
-            sDefeatedEnemies.emplace(keyStr, true);
+            sDefeatedEnemies.emplace(keyStr, DefeatInfo{ true, 0, 0 });
         }
     }
 }
@@ -464,8 +682,7 @@ void Anchor::TickEnemyMovementSync() {
     std::vector<uint32_t> targets;
     std::vector<Vec3f> otherPositions;
     for (auto& [clientId, client] : clients) {
-        if (client.self || !client.online || !client.isSaveLoaded || client.sceneNum != gPlayState->sceneNum ||
-            client.player == nullptr) {
+        if (GetDummyInScene(clientId) == nullptr) {
             continue;
         }
         targets.push_back(clientId);
@@ -520,7 +737,7 @@ void Anchor::TickEnemyMovementSync() {
 }
 
 void Anchor::HandlePacket_EnemyMovement(nlohmann::json payload) {
-    if (!ShouldSyncEnemies() || !roomState.syncEnemyMovement) {
+    if (!ShouldSyncEnemyMovement()) {
         return;
     }
 

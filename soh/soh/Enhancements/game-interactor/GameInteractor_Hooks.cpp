@@ -171,10 +171,13 @@ void GameInteractor_ExecuteOnActorUpdate(void* actor) {
 
 void GameInteractor_ExecuteOnActorUpdateBegin(void* actor, void** playerOverride) {
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnActorUpdateBegin>(actor, playerOverride);
+    GameInteractor::Instance->ExecuteHooksForID<GameInteractor::OnActorUpdateBegin>(((Actor*)actor)->id, actor,
+                                                                                   playerOverride);
 }
 
 void GameInteractor_ExecuteOnActorUpdateEnd(void* actor) {
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnActorUpdateEnd>(actor);
+    GameInteractor::Instance->ExecuteHooksForID<GameInteractor::OnActorUpdateEnd>(((Actor*)actor)->id, actor);
 }
 
 void GameInteractor_ExecuteOnActorKill(void* actor) {

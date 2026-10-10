@@ -1,6 +1,7 @@
 #include "Anchor.h"
 #include "soh/Enhancements/nametag.h"
 #include "soh/ObjectExtension/ObjectExtension.h"
+#include "soh/ResourceManagerHelpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,6 +10,7 @@ extern "C" {
 #include "macros.h"
 #include "variables.h"
 #include "functions.h"
+#include "objects/gameplay_keep/gameplay_keep.h"
 extern PlayState* gPlayState;
 
 void Player_UseItem(PlayState* play, Player* player, s32 item);
@@ -162,6 +164,103 @@ static void DummyPlayer_UpdateWaterEffects(Player* player, PlayState* play) {
     state->lastPos = actor->world.pos;
 }
 
+// Crawling through a crawlspace. Your own character crawls in with the "enter crawlspace" animation, but once it's
+// inside the game just holds the last frame of that animation and slides it along (you never see it, the camera is
+// behind you). Other players can see it, so their characters loop the crawling part of that animation instead,
+// moving the hands and knees in step with how far the character actually moved.
+struct DummyPlayerCrawlState {
+    bool valid = false;
+    f32 frame = 0.0f;
+    Vec3f lastPos = { 0.0f, 0.0f, 0.0f };
+};
+static ObjectExtension::Register<DummyPlayerCrawlState> DummyPlayerCrawlStateRegister;
+
+constexpr f32 CRAWL_LOOP_START_FRAME = 40.0f; // The crawl steps in that animation run from frame 40...
+constexpr f32 CRAWL_LOOP_END_FRAME = 104.0f;  // ...to 104, one hand/knee step every 8 frames
+static f32 sCrawlFramesPerUnit = -1.0f;       // Animation frames per unit moved, worked out from the animation
+
+static LinkAnimationHeader* GetCrawlAnimation() {
+    void* anim = (void*)gPlayerAnim_link_child_tunnel_start;
+    if (ResourceMgr_OTRSigCheck((char*)anim) != 0) {
+        anim = ResourceMgr_LoadAnimByName((const char*)anim);
+    }
+    return (LinkAnimationHeader*)anim;
+}
+
+// Copy one frame of a Link animation (same layout the game uses when it loads a frame)
+static void LoadLinkAnimFrame(LinkAnimationHeader* anim, s32 frame, Vec3s* out) {
+    size_t frameSize = sizeof(Vec3s) * PLAYER_LIMB_MAX + 2;
+    memcpy(out, (u8*)anim->segment + frameSize * frame, frameSize);
+}
+
+static void DummyPlayer_AnimateCrawl(Player* player, AnchorClient& client) {
+    Actor* actor = &player->actor;
+    DummyPlayerCrawlState* state = ObjectExtension::GetInstance().Get<DummyPlayerCrawlState>(actor);
+    if (state == nullptr) {
+        ObjectExtension::GetInstance().Set<DummyPlayerCrawlState>(actor, DummyPlayerCrawlState{});
+        state = ObjectExtension::GetInstance().Get<DummyPlayerCrawlState>(actor);
+    }
+
+    // Only while inside the crawlspace (the entering/leaving animations already play normally)
+    bool crawlingInside = (client.stateFlags2 & PLAYER_STATE2_CRAWLING) && client.movementFlags == 0 &&
+                          client.linkAge == LINK_AGE_CHILD;
+    if (!crawlingInside) {
+        state->valid = false;
+        return;
+    }
+
+    LinkAnimationHeader* anim = GetCrawlAnimation();
+    if (anim == nullptr || anim->segment == nullptr) {
+        return;
+    }
+
+    f32 lastFrame = Animation_GetLastFrame(anim);
+    f32 loopEnd = std::min(CRAWL_LOOP_END_FRAME, lastFrame);
+    if (loopEnd <= CRAWL_LOOP_START_FRAME) {
+        return;
+    }
+
+    // How far the animation itself carries Link per frame while crawling, so the hands and knees keep pace
+    if (sCrawlFramesPerUnit < 0.0f) {
+        Vec3s startFrame[PLAYER_LIMB_BUF_COUNT];
+        Vec3s endFrame[PLAYER_LIMB_BUF_COUNT];
+        LoadLinkAnimFrame(anim, (s32)CRAWL_LOOP_START_FRAME, startFrame);
+        LoadLinkAnimFrame(anim, (s32)loopEnd, endFrame);
+        f32 rootDist = sqrtf(SQ((f32)(endFrame[0].x - startFrame[0].x)) + SQ((f32)(endFrame[0].z - startFrame[0].z)));
+        f32 unitsPerFrame = rootDist * 0.01f / (loopEnd - CRAWL_LOOP_START_FRAME);
+        sCrawlFramesPerUnit = (unitsPerFrame > 0.1f && unitsPerFrame < 10.0f) ? (1.0f / unitsPerFrame) : 0.7f;
+    }
+
+    if (!state->valid) {
+        state->valid = true;
+        state->frame = CRAWL_LOOP_START_FRAME;
+    } else {
+        // Forward/backward distance moved along the way the character faces
+        f32 dx = actor->world.pos.x - state->lastPos.x;
+        f32 dz = actor->world.pos.z - state->lastPos.z;
+        f32 forward = dx * Math_SinS(actor->shape.rot.y) + dz * Math_CosS(actor->shape.rot.y);
+
+        if (fabsf(forward) < 30.0f) { // Anything bigger is a teleport, not crawling
+            f32 loopLength = loopEnd - CRAWL_LOOP_START_FRAME;
+            state->frame += forward * sCrawlFramesPerUnit;
+            while (state->frame >= loopEnd) {
+                state->frame -= loopLength;
+            }
+            while (state->frame < CRAWL_LOOP_START_FRAME) {
+                state->frame += loopLength;
+            }
+        }
+    }
+    state->lastPos = actor->world.pos;
+
+    // Use the limb rotations from that frame; keep the root position the other player's game sent
+    Vec3s frameJoints[PLAYER_LIMB_BUF_COUNT];
+    LoadLinkAnimFrame(anim, (s32)state->frame, frameJoints);
+    for (s32 i = 1; i < PLAYER_LIMB_MAX; i++) {
+        client.jointTable[i] = frameJoints[i];
+    }
+}
+
 void Math_Vec3s_Copy(Vec3s* dest, Vec3s* src) {
     dest->x = src->x;
     dest->y = src->y;
@@ -207,28 +306,14 @@ void DummyPlayer_Update(Actor* actor, PlayState* play) {
     player->unk_862 = client.unk_862;
     player->unk_85C = client.unk_85C;
     player->av1.actionVar1 = client.actionVar1;
+    player->unk_6C2 = client.divePitch;
+    player->unk_6C4 = client.sinkDepth;
 
-    // Apply animation movement (Copied from Player_ApplyAnimMovementScaledByAge)
-    Vec3f diff;
-    SkelAnime_UpdateTranslation(&player->skelAnime, &diff, player->actor.shape.rot.y);
+    // No animation movement is applied here: the other player's game sends its position and pose after its own
+    // animation movement (climbing, ledges, crawlspaces...) has already moved it, so the character is drawn exactly
+    // where and how it is in their game. Moving it again here made climbing characters jitter up and down.
 
-    if (player->skelAnime.movementFlags & 1) {
-        if (!LINK_IS_ADULT) {
-            diff.x *= 0.64f;
-            diff.z *= 0.64f;
-        }
-
-        player->actor.world.pos.x += diff.x * player->actor.scale.x;
-        player->actor.world.pos.z += diff.z * player->actor.scale.z;
-    }
-
-    if (player->skelAnime.movementFlags & 2) {
-        if (!(player->skelAnime.movementFlags & 4)) {
-            diff.y *= player->ageProperties->unk_08;
-        }
-
-        player->actor.world.pos.y += diff.y * player->actor.scale.y;
-    }
+    DummyPlayer_AnimateCrawl(player, client);
 
     DummyPlayer_UpdateWaterEffects(player, play);
 

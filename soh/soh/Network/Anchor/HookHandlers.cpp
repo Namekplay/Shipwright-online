@@ -93,10 +93,10 @@ void Anchor::RegisterHooks() {
         }
 
         // Our pose isn't finished yet at this point: the game blends in the upper body animation (carrying, holding
-        // items, crawling...) and smooths between animations after every actor has updated. So remember where our
-        // root was moved to now, and send the pose once the frame's animation is done (when drawing starts).
+        // items, crawling...), smooths between animations and applies movement that comes from the animation itself
+        // (climbing, ledges, crawlspaces) after every actor has updated. So send the pose and position once the
+        // frame's animation is done (when drawing starts), exactly as our game is about to draw us.
         if (IsSaveLoaded()) {
-            pendingRootTransl = GET_PLAYER(gPlayState)->skelAnime.jointTable[0];
             playerUpdatePending = true;
         }
 
@@ -120,6 +120,9 @@ void Anchor::RegisterHooks() {
     RegisterPropSyncHooks();
     RegisterProjectileSyncHooks();
     RegisterDropSyncHooks();
+    RegisterNpcSyncHooks();
+    RegisterSpawnSyncHooks();
+    RegisterItemSyncHooks();
 
     // Keep track of whose update is running, so anything an actor spawns (a shot, a dropped item) can be traced
     // back to it

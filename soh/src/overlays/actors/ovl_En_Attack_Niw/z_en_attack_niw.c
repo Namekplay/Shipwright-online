@@ -8,6 +8,7 @@
 #include "objects/object_niw/object_niw.h"
 #include "overlays/actors/ovl_En_Niw/z_en_niw.h"
 #include "soh/ResourceManagerHelpers.h"
+#include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
 
 #define FLAGS ACTOR_FLAG_UPDATE_CULLING_DISABLED
 
@@ -250,7 +251,7 @@ void func_809B5670(EnAttackNiw* this, PlayState* play) {
 }
 
 void func_809B59B0(EnAttackNiw* this, PlayState* play) {
-    if (!func_809B55EC(this, play)) {
+    if (!func_809B55EC(this, play) && GameInteractor_Should(VB_ATTACK_CUCCO_LEAVE_OFFSCREEN, true, this)) {
         Actor_Kill(&this->actor);
         return;
     }
@@ -291,7 +292,7 @@ void func_809B59B0(EnAttackNiw* this, PlayState* play) {
 }
 
 void func_809B5C18(EnAttackNiw* this, PlayState* play) {
-    if (!func_809B55EC(this, play)) {
+    if (!func_809B55EC(this, play) && GameInteractor_Should(VB_ATTACK_CUCCO_LEAVE_OFFSCREEN, true, this)) {
         Actor_Kill(&this->actor);
         return;
     }

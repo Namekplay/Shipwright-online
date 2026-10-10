@@ -136,6 +136,18 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_DropSpawned(payload);
             else if (packetType == DROP_TAKEN)
                 HandlePacket_DropTaken(payload);
+            else if (packetType == BOMB_FLOWER_PLUCKED)
+                HandlePacket_BombFlowerPlucked(payload);
+            else if (packetType == ENEMY_SPAWNED)
+                HandlePacket_EnemySpawned(payload);
+            else if (packetType == ENEMY_DESPAWNED)
+                HandlePacket_EnemyDespawned(payload);
+            else if (packetType == NPC_HIT)
+                HandlePacket_NpcHit(payload);
+            else if (packetType == NPC_HELD)
+                HandlePacket_NpcHeld(payload);
+            else if (packetType == NPC_RELEASED)
+                HandlePacket_NpcReleased(payload);
             else if (packetType == PROJECTILE_FIRED)
                 HandlePacket_ProjectileFired(payload);
             else if (packetType == PROJECTILE_ENDED)

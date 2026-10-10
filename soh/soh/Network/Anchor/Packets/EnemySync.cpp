@@ -59,6 +59,12 @@ extern PlayState* gPlayState;
  * ENEMY_MOVEMENT      - Sent ~10 times a second to players in the same scene with the enemies you're in charge of
  */
 
+// Non-enemy actors that also use movement sync (cuccos, rolling Gorons) - see NpcSync.cpp
+bool AnchorNpcSync_IsMovementSynced(Actor* actor);
+bool AnchorNpcSync_CanApplyMovement(Actor* actor);
+void AnchorNpcSync_WriteMovementExtra(Actor* actor, nlohmann::json& entry);
+void AnchorNpcSync_ReadMovementExtra(Actor* actor, const nlohmann::json& entry);
+
 namespace {
 
 struct PendingHit {
@@ -219,6 +225,7 @@ bool IsEnemyPerceptionExcluded(Actor* actor) {
         case ACTOR_EN_FLOORMAS: // Floormaster
         case ACTOR_EN_DH:       // Dead Hand
         case ACTOR_EN_DHA:      // Dead Hand's hands
+        case ACTOR_EN_ATTACK_NIW: // Attack cuccos chase whoever angered them (see NpcSync)
             return true;
         default:
             return false;
@@ -314,9 +321,27 @@ void FireReplayHit(Actor* actor, const PendingHit& hit) {
     CollisionCheck_SetAT(gPlayState, &gPlayState->colChkCtx, &collider->base);
 }
 
+// Enemies, plus the few other actors that move around on their own and need to match (cuccos, rolling Gorons)
+bool IsMovementSyncedActor(Actor* actor) {
+    if (actor->category == ACTORCAT_ENEMY) {
+        return !IsEnemyMovementExcluded(actor);
+    }
+    return AnchorNpcSync_IsMovementSynced(actor);
+}
+
+// Being carried by a player (us or another player's character): whoever is carrying it decides where it is
+bool IsHeldByAPlayer(Actor* actor) {
+    Actor* parent = actor->parent;
+    return parent != nullptr && (parent->category == ACTORCAT_PLAYER || IsDummyPlayer(parent));
+}
+
 // Pull our copy of an enemy toward where the player running it says it is
 void ApplyEnemyMovement(Actor* actor, EnemySyncData* data) {
     if (!data->hasTarget || data->isMovementAuthority) {
+        return;
+    }
+
+    if (IsHeldByAPlayer(actor) || !AnchorNpcSync_CanApplyMovement(actor)) {
         return;
     }
 
@@ -344,6 +369,26 @@ void ApplyEnemyMovement(Actor* actor, EnemySyncData* data) {
 
     actor->shape.rot.y += (s16)((s16)(data->targetShapeRotY - actor->shape.rot.y) * ENEMY_MOVEMENT_LERP);
     actor->world.rot.y += (s16)((s16)(data->targetWorldRotY - actor->world.rot.y) * ENEMY_MOVEMENT_LERP);
+}
+
+// Same as below, but also finds the non-enemy actors that use movement sync
+Actor* FindLiveMovementActorByKey(const std::string& key) {
+    static const u8 categories[] = { ACTORCAT_ENEMY, ACTORCAT_NPC, ACTORCAT_PROP };
+
+    for (u8 category : categories) {
+        for (Actor* actor = gPlayState->actorCtx.actorLists[category].head; actor != NULL; actor = actor->next) {
+            if (actor->update == NULL || !IsMovementSyncedActor(actor)) {
+                continue;
+            }
+
+            EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+            if (data != nullptr && !data->handled && data->key == key) {
+                return actor;
+            }
+        }
+    }
+
+    return nullptr;
 }
 
 Actor* FindLiveEnemyByKey(const std::string& key) {
@@ -392,6 +437,23 @@ bool AnchorEnemySync_WillReplayHit(Actor* victim) {
 
     EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(victim);
     return data != nullptr && !data->handled;
+}
+
+// The key an actor is known by across games (scene + id + params + spawn position), or "" if it has none
+std::string AnchorEnemySync_GetKey(Actor* actor) {
+    EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+    return data != nullptr ? data->key : std::string();
+}
+
+// True once an enemy has been defeated in our game (by us or by a synced kill)
+bool AnchorEnemySync_IsHandled(Actor* actor) {
+    EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+    return data != nullptr && data->handled;
+}
+
+// True if an enemy with this key is already known to be dead in this scene
+bool AnchorEnemySync_IsKeyDefeated(const std::string& key) {
+    return sDefeatedEnemies.contains(key);
 }
 
 void Anchor::RegisterEnemySyncHooks() {
@@ -498,7 +560,18 @@ void Anchor::RegisterEnemySyncHooks() {
     // After an enemy updates: replay other players' hits on it, then line it up with whoever is running it
     COND_HOOK(OnActorUpdate, isConnected, [&](void* refActor) {
         Actor* actor = (Actor*)refActor;
-        if (actor->category != ACTORCAT_ENEMY || !roomState.syncEnemies) {
+        if (!roomState.syncEnemies) {
+            return;
+        }
+
+        // Cuccos and rolling Gorons: movement only (they can't be hit or killed like enemies)
+        if (actor->category != ACTORCAT_ENEMY) {
+            if (roomState.syncEnemyMovement && AnchorNpcSync_IsMovementSynced(actor)) {
+                EnemySyncData* npcData = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);
+                if (npcData != nullptr) {
+                    ApplyEnemyMovement(actor, npcData);
+                }
+            }
             return;
         }
 
@@ -698,6 +771,9 @@ void Anchor::HandlePacket_RequestEnemyState(nlohmann::json payload) {
         return;
     }
 
+    // Copies of the enemies that appeared out of nowhere in our game and are still around (Stalchildren etc.)
+    SendPacket_SpawnStateTo(payload["clientId"].get<uint32_t>());
+
     nlohmann::json keys = nlohmann::json::array();
     for (auto& [key, info] : sDefeatedEnemies) {
         if (KeyIsForScene(key, sceneNum)) {
@@ -766,9 +842,11 @@ void Anchor::TickEnemyMovementSync() {
 
     Player* self = GET_PLAYER(gPlayState);
     nlohmann::json enemies = nlohmann::json::array();
+    static const u8 categories[] = { ACTORCAT_ENEMY, ACTORCAT_NPC, ACTORCAT_PROP };
 
-    for (Actor* actor = gPlayState->actorCtx.actorLists[ACTORCAT_ENEMY].head; actor != NULL; actor = actor->next) {
-        if (actor->update == NULL || IsEnemyMovementExcluded(actor)) {
+    for (u8 category : categories) {
+    for (Actor* actor = gPlayState->actorCtx.actorLists[category].head; actor != NULL; actor = actor->next) {
+        if (actor->update == NULL || !IsMovementSyncedActor(actor)) {
             continue;
         }
 
@@ -783,12 +861,22 @@ void Anchor::TickEnemyMovementSync() {
             closestOther = std::min(closestOther, Math_Vec3f_DistXYZ(&pos, &actor->world.pos));
         }
 
-        data->isMovementAuthority = myDist <= closestOther + ENEMY_MOVEMENT_AUTHORITY_MARGIN;
+        // Something we're carrying is always ours to move; something another player carries is always theirs
+        if (IsHeldByAPlayer(actor)) {
+            data->isMovementAuthority = actor->parent == &self->actor;
+        } else {
+            data->isMovementAuthority = myDist <= closestOther + ENEMY_MOVEMENT_AUTHORITY_MARGIN;
+        }
 
         if (data->isMovementAuthority) {
-            enemies.push_back({ data->key, lroundf(actor->world.pos.x), lroundf(actor->world.pos.y),
-                                lroundf(actor->world.pos.z), actor->shape.rot.y, actor->world.rot.y });
+            nlohmann::json entry = { data->key, lroundf(actor->world.pos.x), lroundf(actor->world.pos.y),
+                                     lroundf(actor->world.pos.z), actor->shape.rot.y, actor->world.rot.y };
+            if (actor->category != ACTORCAT_ENEMY) {
+                AnchorNpcSync_WriteMovementExtra(actor, entry);
+            }
+            enemies.push_back(entry);
         }
+    }
     }
 
     if (enemies.empty()) {
@@ -822,9 +910,13 @@ void Anchor::HandlePacket_EnemyMovement(nlohmann::json payload) {
             continue;
         }
 
-        Actor* actor = FindLiveEnemyByKey(entry[0].get<std::string>());
-        if (actor == nullptr || IsEnemyMovementExcluded(actor)) {
+        Actor* actor = FindLiveMovementActorByKey(entry[0].get<std::string>());
+        if (actor == nullptr) {
             continue;
+        }
+
+        if (actor->category != ACTORCAT_ENEMY) {
+            AnchorNpcSync_ReadMovementExtra(actor, entry);
         }
 
         EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(actor);

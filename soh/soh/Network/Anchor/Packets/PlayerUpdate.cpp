@@ -9,6 +9,10 @@ extern "C" {
 extern PlayState* gPlayState;
 }
 
+// See ItemSync.cpp
+nlohmann::json AnchorItemSync_Collect();
+void AnchorItemSync_Apply(uint32_t clientId, const nlohmann::json& items);
+
 /**
  * PLAYER_UPDATE
  *
@@ -45,9 +49,9 @@ void Anchor::SendPacket_PlayerUpdate() {
     payload["posRot"]["rot"] = player->actor.shape.rot;
     std::vector<int> jointArray;
     for (size_t i = 0; i < 24; i++) {
-        // Entry 0 is the root position, which the player's update already turned into movement; send it as it was
-        // then, so the other games move our character the same amount. The rest is the finished pose.
-        Vec3s joint = (i == 0) ? pendingRootTransl : player->skelAnime.jointTable[i];
+        // The finished pose as it's about to be drawn, root offset included. Any movement the animation carried us
+        // by is already in our position, so the other games draw us exactly here and don't move us again.
+        Vec3s joint = player->skelAnime.jointTable[i];
         jointArray.push_back(joint.x);
         jointArray.push_back(joint.y);
         jointArray.push_back(joint.z);
@@ -69,6 +73,9 @@ void Anchor::SendPacket_PlayerUpdate() {
     payload["unk_862"] = player->unk_862;
     payload["unk_85C"] = player->unk_85C;
     payload["actionVar1"] = player->av1.actionVar1;
+    payload["divePitch"] = player->unk_6C2;
+    payload["sinkDepth"] = player->unk_6C4;
+    payload["items"] = AnchorItemSync_Collect(); // Our boomerang, bombs, bombchus and hookshot
     payload["quiet"] = true;
 
     for (auto& [clientId, client] : clients) {
@@ -116,5 +123,9 @@ void Anchor::HandlePacket_PlayerUpdate(nlohmann::json payload) {
         client.unk_862 = payload.value("unk_862", (s16)0);
         client.unk_85C = payload.value("unk_85C", (f32)0);
         client.actionVar1 = payload.value("actionVar1", (s8)0);
+        client.divePitch = payload.value("divePitch", (s16)0);
+        client.sinkDepth = payload.value("sinkDepth", 0.0f);
+
+        AnchorItemSync_Apply(clientId, payload.value("items", nlohmann::json::array()));
     }
 }

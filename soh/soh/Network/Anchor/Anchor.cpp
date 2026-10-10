@@ -8,6 +8,7 @@
 extern "C" {
 #include "variables.h"
 #include "functions.h"
+#include "src/overlays/actors/ovl_En_Elf/z_en_elf.h"
 extern PlayState* gPlayState;
 }
 
@@ -131,6 +132,14 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_AllClientState(payload);
             else if (packetType == DAMAGE_PLAYER)
                 HandlePacket_DamagePlayer(payload);
+            else if (packetType == DROP_SPAWNED)
+                HandlePacket_DropSpawned(payload);
+            else if (packetType == DROP_TAKEN)
+                HandlePacket_DropTaken(payload);
+            else if (packetType == PROJECTILE_FIRED)
+                HandlePacket_ProjectileFired(payload);
+            else if (packetType == PROJECTILE_ENDED)
+                HandlePacket_ProjectileEnded(payload);
             else if (packetType == DISABLE_ANCHOR)
                 HandlePacket_DisableAnchor(payload);
             else if (packetType == ENEMY_DAMAGE)
@@ -254,8 +263,34 @@ void Anchor::RefreshClientActors() {
             Actor_Spawn(&gPlayState->actorCtx, gPlayState, ACTOR_PLAYER, client.posRot.pos.x, client.posRot.pos.y,
                         client.posRot.pos.z, client.posRot.rot.x, client.posRot.rot.y, client.posRot.rot.z, 0);
         client.player = (Player*)dummy;
+
+        if (dummy != nullptr) {
+            SpawnDummyFairy(dummy);
+        }
     }
     spawningDummyPlayerForClientId = 0;
+}
+
+// Give another player's character a fairy companion that follows them around, like Navi follows you. It's the kind of
+// fairy that follows the Kokiri around, colored like Navi. It goes away on its own when their character does.
+void Anchor::SpawnDummyFairy(Actor* dummy) {
+    EnElf* fairy = (EnElf*)Actor_SpawnAsChild(&gPlayState->actorCtx, dummy, gPlayState, ACTOR_EN_ELF,
+                                              dummy->world.pos.x, dummy->world.pos.y + 40.0f, dummy->world.pos.z, 0,
+                                              0, 0, FAIRY_KOKIRI);
+    if (fairy == nullptr) {
+        return;
+    }
+
+    // Navi's colors (white center, light blue glow)
+    fairy->innerColor = Color_RGBAf{ 255.0f, 255.0f, 255.0f, 255.0f };
+    fairy->outerColor = Color_RGBAf{ 0.0f, 0.0f, 255.0f, 0.0f };
+
+    // Kokiri fairies can be caught in a bottle; someone else's fairy can't
+    Player* self = GET_PLAYER(gPlayState);
+    if (self != nullptr && self->interactRangeActor == &fairy->actor) {
+        self->interactRangeActor = NULL;
+    }
+    fairy->actor.flags &= ~ACTOR_FLAG_ATTENTION_ENABLED;
 }
 
 bool Anchor::IsSaveLoaded() {

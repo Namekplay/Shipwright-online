@@ -73,6 +73,7 @@ typedef struct {
     u8 syncTime;          // 0 = off, 1 = on
     u8 syncObjects;       // 0 = off, 1 = on
     u8 syncEnemyMovement; // 0 = off, 1 = on
+    u8 itemDropMode;      // 0 = off (only yours), 1 = visible only, 2 = shared (anyone can grab)
 } RoomState;
 
 class Anchor : public Network {
@@ -96,6 +97,9 @@ class Anchor : public Network {
     void RegisterObjectSyncHooks();
     void RegisterHitEffectHooks();
     void RegisterPropSyncHooks();
+    void RegisterProjectileSyncHooks();
+    void RegisterDropSyncHooks();
+    void SpawnDummyFairy(Actor* dummy);
     void TickBoulderSync();
     void TickTimeSync();
     void TickEnemyMovementSync();
@@ -106,6 +110,8 @@ class Anchor : public Network {
     void HandlePacket_ConsumeAdultTradeItem(nlohmann::json payload);
     void HandlePacket_DamagePlayer(nlohmann::json payload);
     void HandlePacket_DisableAnchor(nlohmann::json payload);
+    void HandlePacket_DropSpawned(nlohmann::json payload);
+    void HandlePacket_DropTaken(nlohmann::json payload);
     void HandlePacket_EnemyDamage(nlohmann::json payload);
     void HandlePacket_EnemyDefeated(nlohmann::json payload);
     void HandlePacket_EnemyHit(nlohmann::json payload);
@@ -123,6 +129,8 @@ class Anchor : public Network {
     void HandlePacket_OcarinaSfx(nlohmann::json payload);
     void HandlePacket_PlayerSfx(nlohmann::json payload);
     void HandlePacket_PlayerUpdate(nlohmann::json payload);
+    void HandlePacket_ProjectileEnded(nlohmann::json payload);
+    void HandlePacket_ProjectileFired(nlohmann::json payload);
     void HandlePacket_RequestEnemyState(nlohmann::json payload);
     void HandlePacket_RequestObjectState(nlohmann::json payload);
     void HandlePacket_RequestTeamState(nlohmann::json payload);
@@ -149,6 +157,8 @@ class Anchor : public Network {
     inline static const std::string BOULDER_STATE = "BOULDER_STATE";
     inline static const std::string DAMAGE_PLAYER = "DAMAGE_PLAYER";
     inline static const std::string DISABLE_ANCHOR = "DISABLE_ANCHOR";
+    inline static const std::string DROP_SPAWNED = "DROP_SPAWNED";
+    inline static const std::string DROP_TAKEN = "DROP_TAKEN";
     inline static const std::string ENEMY_DAMAGE = "ENEMY_DAMAGE";
     inline static const std::string ENEMY_DEFEATED = "ENEMY_DEFEATED";
     inline static const std::string ENEMY_HIT = "ENEMY_HIT";
@@ -166,6 +176,8 @@ class Anchor : public Network {
     inline static const std::string OCARINA_SFX = "OCARINA_SFX";
     inline static const std::string PLAYER_SFX = "PLAYER_SFX";
     inline static const std::string PLAYER_UPDATE = "PLAYER_UPDATE";
+    inline static const std::string PROJECTILE_ENDED = "PROJECTILE_ENDED";
+    inline static const std::string PROJECTILE_FIRED = "PROJECTILE_FIRED";
     inline static const std::string REQUEST_ENEMY_STATE = "REQUEST_ENEMY_STATE";
     inline static const std::string REQUEST_OBJECT_STATE = "REQUEST_OBJECT_STATE";
     inline static const std::string REQUEST_TEAM_STATE = "REQUEST_TEAM_STATE";
@@ -186,6 +198,7 @@ class Anchor : public Network {
     static Anchor* Instance;
     std::map<uint32_t, AnchorClient> clients;
     RoomState roomState;
+    Actor* updatingActor = nullptr; // The actor whose update is running right now (nullptr between updates)
 
     void Enable();
     void Disable();
@@ -202,6 +215,8 @@ class Anchor : public Network {
 
     void SendPacket_ClearTeamState(std::string teamId);
     void SendPacket_DamagePlayer(u32 clientId, u8 damageEffect, u8 damage);
+    void SendPacket_DropSpawned(EnItem00* item, uint32_t id);
+    void SendPacket_DropTaken(uint32_t ownerClientId, uint32_t id);
     void SendPacket_EnemyDefeated(const std::string& key, u32 dmgFlags);
     void SendPacket_EnemyHit(const std::string& key, u32 dmgFlags, u8 damage);
     void SendPacket_EntranceDiscovered(u16 entranceIndex);
@@ -215,6 +230,8 @@ class Anchor : public Network {
     void SendPacket_OcarinaSfx(uint8_t note, float modulator, int8_t bend);
     void SendPacket_PlayerSfx(u16 sfxId);
     void SendPacket_PlayerUpdate();
+    void SendPacket_ProjectileEnded(uint32_t id, Vec3f* pos, bool hit);
+    void SendPacket_ProjectileFired(Actor* actor, uint32_t id);
     void SendPacket_RequestEnemyState();
     void SendPacket_RequestObjectState();
     void SendPacket_RequestTeamState();

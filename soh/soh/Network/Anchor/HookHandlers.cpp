@@ -118,6 +118,14 @@ void Anchor::RegisterHooks() {
     RegisterObjectSyncHooks();
     RegisterHitEffectHooks();
     RegisterPropSyncHooks();
+    RegisterProjectileSyncHooks();
+    RegisterDropSyncHooks();
+
+    // Keep track of whose update is running, so anything an actor spawns (a shot, a dropped item) can be traced
+    // back to it
+    COND_HOOK(OnActorUpdateBegin, isConnected,
+              [&](void* refActor, void** playerOverride) { updatingActor = (Actor*)refActor; });
+    COND_HOOK(OnActorUpdateEnd, isConnected, [&](void* refActor) { updatingActor = nullptr; });
 
     COND_HOOK(OnPlayerSfx, isConnected, [&](u16 sfxId) { SendPacket_PlayerSfx(sfxId); });
     COND_HOOK(OnOcarinaNote, isConnected,

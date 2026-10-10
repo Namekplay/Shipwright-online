@@ -28,6 +28,7 @@ nlohmann::json Anchor::PrepRoomState() {
         payload["syncTime"] = 0;
         payload["syncObjects"] = 0;
         payload["syncEnemyMovement"] = 0;
+        payload["itemDropMode"] = 0;
     } else {
         payload["pvpMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.PvpMode"), 1);
         payload["showLocationsMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.ShowLocationsMode"), 1);
@@ -37,6 +38,7 @@ nlohmann::json Anchor::PrepRoomState() {
         payload["syncTime"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncTime"), 1);
         payload["syncObjects"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncObjects"), 1);
         payload["syncEnemyMovement"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.SyncEnemyMovement"), 1);
+        payload["itemDropMode"] = CVarGetInteger(CVAR_REMOTE_ANCHOR("RoomSettings.ItemDropMode"), 2);
     }
 
     return payload;
@@ -67,4 +69,5 @@ void Anchor::HandlePacket_UpdateRoomState(nlohmann::json payload) {
     roomState.syncTime = isGlobalRoom ? 0 : payload["state"].value("syncTime", (u8)1);
     roomState.syncObjects = isGlobalRoom ? 0 : payload["state"].value("syncObjects", (u8)1);
     roomState.syncEnemyMovement = isGlobalRoom ? 0 : payload["state"].value("syncEnemyMovement", (u8)1);
+    roomState.itemDropMode = isGlobalRoom ? 0 : payload["state"].value("itemDropMode", (u8)2);
 }

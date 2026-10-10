@@ -55,8 +55,9 @@ void EnKusa_SetupCut(EnKusa* enKusa);
  * back on its own timer like normal; it isn't remembered for players who arrive later. Everything else stays gone
  * until you leave the scene, same as the enemy kill sync.
  *
- * Item drops still only appear for the player who broke the object. Large crates with a Gold Skulltula hidden inside
- * are not synced, so nobody loses their chance at the token.
+ * Item drops are shared separately (see DropSync): an object broken by a replayed break never drops anything, and one
+ * another player threw that breaks on landing doesn't drop a second copy of their drop. Large crates with a Gold
+ * Skulltula hidden inside are not synced, so nobody loses their chance at the token.
  *
  * OBJECT_BROKEN        - Broadcast to the room when an object breaks in your game
  * OBJECT_PICKED_UP     - Broadcast to the room when you pick an object up
@@ -73,6 +74,7 @@ struct ObjectSyncData {
     bool wasIntact = false; // Was it sitting in its normal untouched state at the end of the last update
     bool heldByMe = false;  // We picked it up and told everyone; tell them again when we let go
     uint32_t heldByClient = 0; // Another player is carrying it (their character holds it in our game)
+    bool thrownByOther = false; // Another player threw or put it down; if it breaks, that's their break
 };
 static ObjectExtension::Register<ObjectSyncData> ObjectSyncDataRegister;
 
@@ -191,6 +193,7 @@ void ReleaseFromDummy(Actor* actor, ObjectSyncData* data) {
 
     actor->parent = NULL;
     data->heldByClient = 0;
+    data->thrownByOther = true;
 }
 
 // Find a loaded, untouched object with this key that hasn't already been handled
@@ -337,6 +340,7 @@ void Anchor::RegisterObjectSyncHooks() {
             if (self != nullptr && actor->parent == &self->actor) {
                 // We picked it up: everyone else sees our character lift and carry it
                 data->heldByMe = true;
+                data->thrownByOther = false;
                 SendPacket_ObjectPickedUp(data->key);
             } else {
                 SendPacket_ObjectBroken(data->key, !Regrows(actor));
@@ -590,4 +594,15 @@ void Anchor::HandlePacket_ObjectState(nlohmann::json payload) {
             BreakObject(actor, true);
         }
     }
+}
+
+// True when this pot/crate/rock breaking in our game is really another player's doing (they threw it, or are carrying
+// it). Their game makes and shares the item drop for it, so ours shouldn't make another.
+bool AnchorObjectSync_IsOtherPlayersObject(Actor* object) {
+    if (object == nullptr || !IsSyncedObjectType(object)) {
+        return false;
+    }
+
+    ObjectSyncData* data = ObjectExtension::GetInstance().Get<ObjectSyncData>(object);
+    return data != nullptr && (data->thrownByOther || data->heldByClient != 0);
 }

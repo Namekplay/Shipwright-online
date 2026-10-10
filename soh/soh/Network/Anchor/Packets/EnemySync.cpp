@@ -25,9 +25,12 @@ extern PlayState* gPlayState;
  * Every player's game still runs its own copy of each enemy. These pieces keep the copies matching:
  *
  * Perception: an enemy reacts to whichever player is closest to it, not only to you. A Deku Baba pops up on your
- * screen when your friend walks up to it, a Stalfos turns to face whoever it is fighting, and so on. (Enemies that
- * grab or freeze the player - Like Like, ReDead, Wallmaster, Floormaster, Dead Hand - only react to you, otherwise
- * they could grab you from across the room.)
+ * screen when your friend walks up to it, a Stalfos turns to face whoever it is fighting, and so on. While the enemy
+ * runs its update, the closest player's character *is* "the player" as far as that enemy can tell, so every check it
+ * makes (distances, directions, where the player is standing, what they're doing) agrees. Earlier builds only changed
+ * the distance/direction values, so enemies that also look at the player's position directly (Deku Babas) got mixed
+ * answers and twitched between growing and hiding. (Enemies that grab or freeze the player - Like Like, ReDead,
+ * Wallmaster, Floormaster, Dead Hand - only react to you, otherwise they could grab you from across the room.)
  *
  * Movement: for each enemy, the player standing closest to it is in charge of it. That player's game runs the enemy
  * normally and sends where it is and which way it faces ~10 times a second. Everyone else's copy is pulled toward that
@@ -73,6 +76,7 @@ struct EnemySyncData {
     u32 lastDmgFlags = 0;                // What we last hit it with, sent along with ENEMY_DEFEATED
     std::vector<PendingHit> pendingHits; // Other players' hits waiting to be replayed on our copy
     u32 killStartFrame = 0;              // When we started replaying someone else's killing blow, 0 = not started
+    bool lastHitWasReplay = false;       // The last hit it took in our game was another player's hit being replayed
 
     // Movement sync
     bool isMovementAuthority = true; // We're the closest player, so our game runs this enemy for everyone
@@ -256,9 +260,10 @@ bool ShouldSyncEnemyMovement() {
     return ShouldSyncEnemies() && Anchor::Instance->roomState.syncEnemyMovement;
 }
 
-// Make the enemy react to whichever player is closest, by pointing its "distance/direction to the player" values
-// at that player before it updates.
-void ApplyNearestPlayerPerception(Actor* actor) {
+// Make the enemy react to whichever player is closest: point its "distance/direction to the player" values at that
+// player, and return that player's character so it can stand in as "the player" while the enemy updates.
+// Returns nullptr when we're the closest (nothing to change).
+Actor* ApplyNearestPlayerPerception(Actor* actor) {
     Actor* nearest = nullptr;
     f32 nearestDistSq = actor->xyzDistToPlayerSq;
 
@@ -278,13 +283,14 @@ void ApplyNearestPlayerPerception(Actor* actor) {
     }
 
     if (nearest == nullptr) {
-        return; // We're the closest; the game already set everything up for us
+        return nullptr; // We're the closest; the game already set everything up for us
     }
 
     actor->xzDistToPlayer = Actor_WorldDistXZToActor(actor, nearest);
     actor->yDistToPlayer = Actor_HeightDiff(actor, nearest);
     actor->xyzDistToPlayerSq = nearestDistSq;
     actor->yawTowardsPlayer = Actor_WorldYawTowardActor(actor, nearest);
+    return nearest;
 }
 
 // Replay another player's hit on our copy of the enemy: a real attack, from their character, at the enemy
@@ -357,6 +363,27 @@ Actor* FindLiveEnemyByKey(const std::string& key) {
 
 } // namespace
 
+// True when an enemy dying right now in our game is really another player's kill (their hit replayed here, or their
+// killing blow being replayed). Their game drops the items for that kill and shares them, so ours shouldn't.
+bool AnchorEnemySync_IsOtherPlayersKill(Actor* enemy) {
+    if (enemy == nullptr || enemy->category != ACTORCAT_ENEMY || Anchor::Instance == nullptr ||
+        !Anchor::Instance->roomState.syncEnemies) {
+        return false;
+    }
+
+    EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(enemy);
+    if (data == nullptr) {
+        return false;
+    }
+
+    if (data->killStartFrame != 0 || data->lastHitWasReplay) {
+        return true;
+    }
+
+    auto it = sDefeatedEnemies.find(data->key);
+    return it != sDefeatedEnemies.end() && it->second.clientId != Anchor::Instance->ownClientId;
+}
+
 bool AnchorEnemySync_WillReplayHit(Actor* victim) {
     if (victim == nullptr || victim->category != ACTORCAT_ENEMY || !ShouldSyncEnemies() ||
         IsEnemySyncExcluded(victim)) {
@@ -427,13 +454,19 @@ void Anchor::RegisterEnemySyncHooks() {
                   Actor* victim = (Actor*)refVictim;
                   Actor* attacker = (Actor*)refAttacker;
                   if (!ShouldSyncEnemies() || victim == nullptr || victim->category != ACTORCAT_ENEMY ||
-                      attacker == nullptr || IsDummyPlayer(attacker) || attacker->category == ACTORCAT_ENEMY ||
+                      attacker == nullptr || attacker->category == ACTORCAT_ENEMY ||
                       attacker->category == ACTORCAT_BOSS || IsEnemySyncExcluded(victim)) {
                       return;
                   }
 
                   EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(victim);
-                  if (data == nullptr || data->handled || data->lastHitSentFrame == gPlayState->gameplayFrames) {
+                  if (data == nullptr || data->handled) {
+                      return;
+                  }
+
+                  // Remember whose hit this was, so a kill from a replayed hit doesn't drop items a second time
+                  data->lastHitWasReplay = IsDummyPlayer(attacker);
+                  if (data->lastHitWasReplay || data->lastHitSentFrame == gPlayState->gameplayFrames) {
                       return;
                   }
 
@@ -442,8 +475,9 @@ void Anchor::RegisterEnemySyncHooks() {
                   SendPacket_EnemyHit(data->key, dmgFlags, damage);
               });
 
-    // Right before an enemy updates: let it notice whichever player is closest
-    COND_HOOK(ShouldActorUpdate, isConnected, [&](void* refActor, bool* should) {
+    // Right as an enemy updates: let it notice whichever player is closest, with that player's character standing in
+    // as "the player" for this one update (the game puts the real player back as soon as the update is done)
+    COND_HOOK(OnActorUpdateBegin, isConnected, [&](void* refActor, void** playerOverride) {
         Actor* actor = (Actor*)refActor;
         if (actor->category != ACTORCAT_ENEMY || actor->update == NULL || !ShouldSyncEnemyMovement() ||
             IsEnemyPerceptionExcluded(actor)) {
@@ -455,7 +489,10 @@ void Anchor::RegisterEnemySyncHooks() {
             return;
         }
 
-        ApplyNearestPlayerPerception(actor);
+        Actor* nearest = ApplyNearestPlayerPerception(actor);
+        if (nearest != nullptr) {
+            *playerOverride = nearest;
+        }
     });
 
     // After an enemy updates: replay other players' hits on it, then line it up with whoever is running it

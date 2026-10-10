@@ -2686,7 +2686,21 @@ void Actor_UpdateAll(PlayState* play, ActorContext* actorCtx) {
                         actor->colorFilterTimer--;
                     }
                     if (GameInteractor_ShouldActorUpdate(actor)) {
+                        // #region SOH [Anchor] Online play can have this actor treat another player's character as
+                        // "the player" for this one update (an enemy reacting to whichever player is closest to it)
+                        Actor* playerOverride = NULL;
+                        GameInteractor_ExecuteOnActorUpdateBegin(actor, (void**)&playerOverride);
+                        if (playerOverride != NULL) {
+                            actorCtx->actorLists[ACTORCAT_PLAYER].head = playerOverride;
+                        }
+                        // #endregion
                         actor->update(actor, play);
+                        // #region SOH [Anchor]
+                        if (playerOverride != NULL) {
+                            actorCtx->actorLists[ACTORCAT_PLAYER].head = &player->actor;
+                        }
+                        GameInteractor_ExecuteOnActorUpdateEnd(actor);
+                        // #endregion
                         GameInteractor_ExecuteOnActorUpdate(actor);
                     }
                     func_8003F8EC(play, &play->colCtx.dyna, actor);

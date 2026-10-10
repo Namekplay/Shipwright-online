@@ -12,6 +12,7 @@ extern std::shared_ptr<AnchorRoomWindow> mAnchorRoomWindow;
 static const char* pvpModes[3] = { "Off", "On", "On + Friendly Fire" };
 static std::vector<const char*> teleportModes = { "None", "Team Only", "All" };
 static std::vector<const char*> showLocationsModes = { "None", "Team Only", "All" };
+static std::vector<const char*> itemDropModes = { "Off (only yours)", "Visible Only", "Shared (anyone can grab)" };
 
 void AnchorMainMenu(WidgetInfo& info) {
     auto anchor = Anchor::Instance;
@@ -216,8 +217,22 @@ void AnchorAdminMenu(WidgetInfo& info) {
                                     .DefaultValue(true)
                                     .Color(THEME_COLOR)
                                     .Tooltip("When a player breaks, cuts or picks up a pot, crate, rock or bush, it "
-                                             "breaks for every other player in the same area too. Item drops still "
-                                             "only go to whoever broke it. All players need this build."))) {
+                                             "breaks for every other player in the same area too. What drops out of "
+                                             "it follows the Item Drops setting. All players need this build."))) {
+        anchor->SendPacket_UpdateRoomState();
+    }
+    if (UIWidgets::CVarCombobox("Item Drops:", CVAR_REMOTE_ANCHOR("RoomSettings.ItemDropMode"), itemDropModes,
+                                UIWidgets::ComboboxOptions()
+                                    .DefaultIndex(2)
+                                    .LabelPosition(UIWidgets::LabelPositions::Above)
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("Rupees, hearts and ammo that pop out of grass, rocks, pots and enemies.\n"
+                                             "Shared: everyone sees them and whoever grabs one first gets it.\n"
+                                             "Visible Only: everyone sees them, but only the player who made "
+                                             "it drop can pick it up.\n"
+                                             "Off: only the player who made it drop sees it.\n"
+                                             "Keys, heart pieces, heart containers and other progress items are "
+                                             "never shared. All players need this build."))) {
         anchor->SendPacket_UpdateRoomState();
     }
     if (UIWidgets::CVarCheckbox("Sync Time of Day", CVAR_REMOTE_ANCHOR("RoomSettings.SyncTime"),

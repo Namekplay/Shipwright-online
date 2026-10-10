@@ -169,6 +169,14 @@ void GameInteractor_ExecuteOnActorUpdate(void* actor) {
     GameInteractor::Instance->ExecuteHooksForFilter<GameInteractor::OnActorUpdate>(actor);
 }
 
+void GameInteractor_ExecuteOnActorUpdateBegin(void* actor, void** playerOverride) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnActorUpdateBegin>(actor, playerOverride);
+}
+
+void GameInteractor_ExecuteOnActorUpdateEnd(void* actor) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnActorUpdateEnd>(actor);
+}
+
 void GameInteractor_ExecuteOnActorKill(void* actor) {
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnActorKill>(actor);
     GameInteractor::Instance->ExecuteHooksForID<GameInteractor::OnActorKill>(((Actor*)actor)->id, actor);

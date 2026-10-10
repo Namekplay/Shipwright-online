@@ -17,6 +17,10 @@ void DummyPlayer_Update(Actor* actor, PlayState* play);
 void DummyPlayer_Draw(Actor* actor, PlayState* play);
 void DummyPlayer_Destroy(Actor* actor, PlayState* play);
 
+// True when a hit on this actor is one Enemy Sync replays in the other players' games (so its hit effects show up
+// there on their own, and don't need to be sent separately)
+bool AnchorEnemySync_WillReplayHit(Actor* victim);
+
 typedef struct {
     uint32_t clientId;
     std::string name;
@@ -75,6 +79,8 @@ class Anchor : public Network {
   private:
     uint32_t spawningDummyPlayerForClientId = 0;
     bool shouldRefreshActors = false;
+    bool playerUpdatePending = false; // Our player updated this frame; send PLAYER_UPDATE once its pose is final
+    Vec3s pendingRootTransl = { 0, 0, 0 };
     bool justLoadedSave = false;
     bool isHandlingUpdateTeamState = false;
     bool isProcessingIncomingPacket = false;
@@ -88,6 +94,9 @@ class Anchor : public Network {
     void RegisterHooks();
     void RegisterEnemySyncHooks();
     void RegisterObjectSyncHooks();
+    void RegisterHitEffectHooks();
+    void RegisterPropSyncHooks();
+    void TickBoulderSync();
     void TickTimeSync();
     void TickEnemyMovementSync();
     void RefreshClientActors();
@@ -105,6 +114,8 @@ class Anchor : public Network {
     void HandlePacket_EntranceDiscovered(nlohmann::json payload);
     void HandlePacket_GameComplete(nlohmann::json payload);
     void HandlePacket_GiveItem(nlohmann::json payload);
+    void HandlePacket_HitEffect(nlohmann::json payload);
+    void HandlePacket_BoulderState(nlohmann::json payload);
     void HandlePacket_ObjectBroken(nlohmann::json payload);
     void HandlePacket_ObjectPickedUp(nlohmann::json payload);
     void HandlePacket_ObjectReleased(nlohmann::json payload);
@@ -117,6 +128,7 @@ class Anchor : public Network {
     void HandlePacket_RequestTeamState(nlohmann::json payload);
     void HandlePacket_RequestTeleport(nlohmann::json payload);
     void HandlePacket_ServerMessage(nlohmann::json payload);
+    void HandlePacket_SignCut(nlohmann::json payload);
     void HandlePacket_SetCheckStatus(nlohmann::json payload);
     void HandlePacket_SetFlag(nlohmann::json payload);
     void HandlePacket_TeleportTo(nlohmann::json payload);
@@ -134,6 +146,7 @@ class Anchor : public Network {
 
     // Packet types //
     inline static const std::string ALL_CLIENT_STATE = "ALL_CLIENT_STATE";
+    inline static const std::string BOULDER_STATE = "BOULDER_STATE";
     inline static const std::string DAMAGE_PLAYER = "DAMAGE_PLAYER";
     inline static const std::string DISABLE_ANCHOR = "DISABLE_ANCHOR";
     inline static const std::string ENEMY_DAMAGE = "ENEMY_DAMAGE";
@@ -145,6 +158,7 @@ class Anchor : public Network {
     inline static const std::string GAME_COMPLETE = "GAME_COMPLETE";
     inline static const std::string GIVE_ITEM = "GIVE_ITEM";
     inline static const std::string HANDSHAKE = "HANDSHAKE";
+    inline static const std::string HIT_EFFECT = "HIT_EFFECT";
     inline static const std::string OBJECT_BROKEN = "OBJECT_BROKEN";
     inline static const std::string OBJECT_PICKED_UP = "OBJECT_PICKED_UP";
     inline static const std::string OBJECT_RELEASED = "OBJECT_RELEASED";
@@ -158,6 +172,7 @@ class Anchor : public Network {
     inline static const std::string REQUEST_TELEPORT = "REQUEST_TELEPORT";
     inline static const std::string SERVER_MESSAGE = "SERVER_MESSAGE";
     inline static const std::string SET_CHECK_STATUS = "SET_CHECK_STATUS";
+    inline static const std::string SIGN_CUT = "SIGN_CUT";
     inline static const std::string SET_FLAG = "SET_FLAG";
     inline static const std::string TELEPORT_TO = "TELEPORT_TO";
     inline static const std::string TIME_SYNC = "TIME_SYNC";
@@ -192,6 +207,7 @@ class Anchor : public Network {
     void SendPacket_EntranceDiscovered(u16 entranceIndex);
     void SendPacket_GameComplete();
     void SendPacket_GiveItem(u16 modId, s16 getItemId);
+    void SendPacket_HitEffect(s16 hitmark, u8 sparks, u16 sfxId, f32 x, f32 y, f32 z);
     void SendPacket_Handshake();
     void SendPacket_ObjectBroken(const std::string& key, bool remember);
     void SendPacket_ObjectPickedUp(const std::string& key);
@@ -204,6 +220,7 @@ class Anchor : public Network {
     void SendPacket_RequestTeamState();
     void SendPacket_RequestTeleport(u32 clientId);
     void SendPacket_SetCheckStatus(RandomizerCheck rc);
+    void SendPacket_SignCut(const std::string& key, u8 meleeWeaponAnimation, s16 yawDiff, u32 dmgFlags);
     void SendPacket_SetFlag(s16 sceneNum, s16 flagType, s16 flag);
     void SendPacket_TeleportTo(u32 clientId);
     void SendPacket_TimeSync();

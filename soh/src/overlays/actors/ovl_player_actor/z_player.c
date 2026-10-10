@@ -9224,6 +9224,11 @@ s32 func_80842DF4(PlayState* play, Player* this) {
                                     Player_PlaySfx(this, NA_SE_IT_WALL_HIT_HARD);
                                 }
                             }
+                            // SOH [Anchor] Sword hit a wall: let other players see the sparks (the wall clink is
+                            // already a player sound, which online play sends on its own; wood plays its own sound)
+                            GameInteractor_ExecuteOnHitEffect(&this->actor, NULL, -1, true,
+                                                              sp48 == 0xA ? NA_SE_IT_REFLECTION_WOOD : 0, sp5C.x,
+                                                              sp5C.y, sp5C.z);
 
                             func_80842CF0(play, this);
                             this->linearVelocity = -14.0f;

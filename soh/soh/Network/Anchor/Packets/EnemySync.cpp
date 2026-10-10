@@ -163,13 +163,9 @@ bool IsEnemySyncExcluded(Actor* actor) {
     }
 }
 
-// Enemies whose position must not be driven by another player's game. Wallmasters and flying pots/tiles home in on
-// the local player specifically, so pulling them toward someone else's spot would make them miss or float.
-bool IsEnemyMovementExcluded(Actor* actor) {
-    if (IsEnemySyncExcluded(actor)) {
-        return true;
-    }
-
+// Enemies that home in on the local player specifically (Wallmasters, flying pots and floor tiles). Pulling them
+// toward someone else's spot, or letting them notice someone else, would make them miss or float.
+bool IsLocalPlayerHomingEnemy(Actor* actor) {
     switch (actor->id) {
         case ACTOR_EN_WALLMAS:   // Wallmaster (drops onto the local player)
         case ACTOR_EN_TUBO_TRAP: // Flying pots
@@ -180,11 +176,36 @@ bool IsEnemyMovementExcluded(Actor* actor) {
     }
 }
 
+// Enemies whose position must not be driven by another player's game
+bool IsEnemyMovementExcluded(Actor* actor) {
+    if (IsEnemySyncExcluded(actor) || IsLocalPlayerHomingEnemy(actor)) {
+        return true;
+    }
+
+    switch (actor->id) {
+        // Rooted or wall-mounted enemies. They never go anywhere, but their position is used to animate them (a Deku
+        // Baba's position is its head on the end of its stem), so pulling it toward another game's copy tears the
+        // head off the stem. Their attacks still react to whichever player is closest.
+        case ACTOR_EN_DEKUBABA: // Deku Baba
+        case ACTOR_EN_KAREBABA: // Big / withered Deku Baba
+        case ACTOR_EN_DEKUNUTS: // Mad Scrub
+        case ACTOR_EN_OKUTA:    // Octorok
+        case ACTOR_EN_ST:       // Skulltula (hangs from its thread)
+        case ACTOR_EN_SW:       // Skullwalltula (on walls)
+        case ACTOR_EN_VM:       // Beamos
+        case ACTOR_EN_BA:       // Jabu-Jabu tentacles
+        case ACTOR_EN_DHA:      // Dead Hand's hands
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Enemies that must only ever notice the local player. These grab, swallow or freeze "the player" as soon as they
 // think the player is close, and the player they act on is always you - so if they noticed a friend standing next to
 // them, they would grab or freeze you from wherever you are.
 bool IsEnemyPerceptionExcluded(Actor* actor) {
-    if (IsEnemyMovementExcluded(actor)) {
+    if (IsEnemySyncExcluded(actor) || IsLocalPlayerHomingEnemy(actor)) {
         return true;
     }
 
@@ -336,12 +357,25 @@ Actor* FindLiveEnemyByKey(const std::string& key) {
 
 } // namespace
 
+bool AnchorEnemySync_WillReplayHit(Actor* victim) {
+    if (victim == nullptr || victim->category != ACTORCAT_ENEMY || !ShouldSyncEnemies() ||
+        IsEnemySyncExcluded(victim)) {
+        return false;
+    }
+
+    EnemySyncData* data = ObjectExtension::GetInstance().Get<EnemySyncData>(victim);
+    return data != nullptr && !data->handled;
+}
+
 void Anchor::RegisterEnemySyncHooks() {
     // Tag every enemy with its key before it initializes (home position is still the untouched spawn position here).
     // If someone already defeated it, don't let it spawn at all.
     COND_HOOK(ShouldActorInit, isConnected, [&](void* actorRef, bool* should) {
         Actor* actor = (Actor*)actorRef;
-        if (actor->category != ACTORCAT_ENEMY || gPlayState == nullptr) {
+        // Tag everything except players, not only actors that start out as enemies: several enemies spawn as another
+        // kind of actor and only become enemies during their own init (Skullwalltulas spawn as NPCs, some Stalfos,
+        // Big Deku Babas, Leevers and Big Octo switch over too). The tag is only ever used once they're enemies.
+        if (gPlayState == nullptr || actor->category == ACTORCAT_PLAYER) {
             return;
         }
 

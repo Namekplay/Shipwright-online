@@ -45,7 +45,9 @@ void Anchor::SendPacket_PlayerUpdate() {
     payload["posRot"]["rot"] = player->actor.shape.rot;
     std::vector<int> jointArray;
     for (size_t i = 0; i < 24; i++) {
-        Vec3s joint = player->skelAnime.jointTable[i];
+        // Entry 0 is the root position, which the player's update already turned into movement; send it as it was
+        // then, so the other games move our character the same amount. The rest is the finished pose.
+        Vec3s joint = (i == 0) ? pendingRootTransl : player->skelAnime.jointTable[i];
         jointArray.push_back(joint.x);
         jointArray.push_back(joint.y);
         jointArray.push_back(joint.z);

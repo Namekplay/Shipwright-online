@@ -151,6 +151,12 @@ void Anchor::ProcessIncomingPacketQueue() {
                 HandlePacket_GameComplete(payload);
             else if (packetType == GIVE_ITEM)
                 HandlePacket_GiveItem(payload);
+            else if (packetType == HIT_EFFECT)
+                HandlePacket_HitEffect(payload);
+            else if (packetType == BOULDER_STATE)
+                HandlePacket_BoulderState(payload);
+            else if (packetType == SIGN_CUT)
+                HandlePacket_SignCut(payload);
             else if (packetType == OBJECT_BROKEN)
                 HandlePacket_ObjectBroken(payload);
             else if (packetType == OBJECT_PICKED_UP)

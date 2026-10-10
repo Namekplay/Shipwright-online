@@ -2,6 +2,7 @@
 #include "vt.h"
 #include "overlays/effects/ovl_Effect_Ss_HitMark/z_eff_ss_hitmark.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
+#include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
 #include <assert.h>
 
 typedef s32 (*ColChkResetFunc)(PlayState*, Collider*);
@@ -1668,6 +1669,59 @@ static HitInfo sHitInfo[] = {
 };
 
 /**
+ * SOH [Anchor] Describe the spark/hitmark and sound a hit is about to make (mirroring CollisionCheck_HitEffects and
+ * CollisionCheck_HitSolid below) and report it, so online play can show the same impact in other players' games.
+ * Blood is left out: it only appears on enemies, whose hits are replayed for real in the other games.
+ */
+static void CollisionCheck_ReportHitEffect(Collider* at, ColliderInfo* atInfo, Collider* ac, ColliderInfo* acInfo,
+                                           Vec3f* hitPos) {
+    s16 hitmark = -1;
+    u8 sparks = false;
+    u16 sfxId = 0;
+
+    if (ac->actor != NULL) {
+        u8 effect = sHitInfo[ac->colType].effect;
+
+        if (effect == HIT_SOLID) {
+            s32 flags = atInfo->toucherFlags & TOUCH_SFX_NONE;
+
+            if (flags == TOUCH_SFX_NORMAL && ac->colType != COLTYPE_METAL) {
+                hitmark = EFFECT_HITMARK_WHITE;
+                sfxId = NA_SE_IT_SHIELD_BOUND;
+            } else if (flags == TOUCH_SFX_NORMAL) {
+                hitmark = EFFECT_HITMARK_METAL;
+                sparks = true;
+                sfxId = NA_SE_IT_SHIELD_REFLECT_SW;
+            } else if (flags == TOUCH_SFX_HARD) {
+                hitmark = EFFECT_HITMARK_WHITE;
+                sfxId = NA_SE_IT_SHIELD_BOUND;
+            } else if (flags == TOUCH_SFX_WOOD) {
+                hitmark = EFFECT_HITMARK_DUST;
+                sfxId = NA_SE_IT_REFLECTION_WOOD;
+            }
+        } else if (effect == HIT_WOOD) {
+            sparks = true;
+            sfxId = NA_SE_IT_REFLECTION_WOOD;
+        } else if (effect != HIT_NONE) {
+            hitmark = effect;
+            if (!(acInfo->bumperFlags & BUMP_NO_SWORD_SFX) && at->actor != NULL &&
+                at->actor->category == ACTORCAT_PLAYER) {
+                if (acInfo->elemType == ELEMTYPE_UNK0) {
+                    sfxId = NA_SE_IT_SWORD_STRIKE;
+                } else if (acInfo->elemType == ELEMTYPE_UNK1) {
+                    sfxId = NA_SE_IT_SWORD_STRIKE_HARD;
+                }
+            }
+        }
+    } else {
+        hitmark = EFFECT_HITMARK_WHITE;
+        sfxId = NA_SE_IT_SHIELD_BOUND;
+    }
+
+    GameInteractor_ExecuteOnHitEffect(at->actor, ac->actor, hitmark, sparks, sfxId, hitPos->x, hitPos->y, hitPos->z);
+}
+
+/**
  * Handles hitmarks, blood, and sound effects for each AC collision, determined by the AC collider's colType
  */
 void CollisionCheck_HitEffects(PlayState* play, Collider* at, ColliderInfo* atInfo, Collider* ac, ColliderInfo* acInfo,
@@ -1678,6 +1732,7 @@ void CollisionCheck_HitEffects(PlayState* play, Collider* at, ColliderInfo* atIn
     if (!(atInfo->toucherFlags & TOUCH_AT_HITMARK) && atInfo->toucherFlags & TOUCH_DREW_HITMARK) {
         return;
     }
+    CollisionCheck_ReportHitEffect(at, atInfo, ac, acInfo, hitPos);
     if (ac->actor != NULL) {
         sBloodFuncs[sHitInfo[ac->colType].blood](play, ac, hitPos);
     }

@@ -1,5 +1,9 @@
 #include "Anchor.h"
 #include "soh/Enhancements/nametag.h"
+#include "soh/ObjectExtension/ObjectExtension.h"
+
+#include <algorithm>
+#include <cmath>
 
 extern "C" {
 #include "macros.h"
@@ -89,6 +93,75 @@ void DummyPlayer_Init(Actor* actor, PlayState* play) {
     }
 }
 
+// Water ripples and splashes. Your own character makes these from its own movement in Player's update, which other
+// players' characters don't run, so they're recreated here from how the character moves through the water.
+struct DummyPlayerWaterState {
+    bool valid = false;     // Has a previous position to compare against
+    bool wasInWater = false; // Feet were under the water surface last update
+    Vec3f lastPos = { 0.0f, 0.0f, 0.0f };
+    f32 rippleDistance = 0.0f; // Distance moved through water since the last ripple
+};
+static ObjectExtension::Register<DummyPlayerWaterState> DummyPlayerWaterStateRegister;
+
+static void DummyPlayer_UpdateWaterEffects(Player* player, PlayState* play) {
+    Actor* actor = &player->actor;
+    DummyPlayerWaterState* state = ObjectExtension::GetInstance().Get<DummyPlayerWaterState>(actor);
+    if (state == nullptr) {
+        ObjectExtension::GetInstance().Set<DummyPlayerWaterState>(actor, DummyPlayerWaterState{});
+        state = ObjectExtension::GetInstance().Get<DummyPlayerWaterState>(actor);
+    }
+
+    f32 surfaceY = actor->world.pos.y;
+    WaterBox* waterBox;
+    bool inWater = WaterBox_GetSurface1(play, &play->colCtx, actor->world.pos.x, actor->world.pos.z, &surfaceY,
+                                        &waterBox) &&
+                   surfaceY > actor->world.pos.y;
+    f32 depth = surfaceY - actor->world.pos.y;
+
+    // A big jump in position means they teleported, respawned or just arrived: nothing to splash about
+    if (state->valid && Math_Vec3f_DistXYZ(&state->lastPos, &actor->world.pos) > 200.0f) {
+        state->valid = false;
+    }
+
+    if (inWater && state->valid) {
+        f32 fallSpeed = state->lastPos.y - actor->world.pos.y;
+        f32 moved = fabsf(actor->world.pos.x - state->lastPos.x) + fabsf(actor->world.pos.y - state->lastPos.y) +
+                    fabsf(actor->world.pos.z - state->lastPos.z);
+        f32 horizontalSpeed = sqrtf(SQ(actor->world.pos.x - state->lastPos.x) + SQ(actor->world.pos.z - state->lastPos.z));
+
+        // Jumping or falling in: a splash where they hit the water
+        if (!state->wasInWater && fallSpeed > 2.0f) {
+            Vec3f splashPos = { actor->world.pos.x, surfaceY, actor->world.pos.z };
+            EffectSsGSplash_Spawn(play, &splashPos, NULL, NULL, (fallSpeed <= 10.0f) ? 0 : 1, 400);
+        }
+
+        // Wading or swimming: a ripple every so often as they move, plus a splash when running through shallow water
+        // (same spacing and sizes as your own character)
+        if (depth < 50.0f || (player->stateFlags1 & PLAYER_STATE1_IN_WATER)) {
+            state->rippleDistance += std::min(moved, 4.0f);
+
+            if (state->rippleDistance > 15.0f) {
+                state->rippleDistance = 0.0f;
+
+                Vec3f ripplePos = { (Rand_ZeroOne() * 10.0f) + actor->world.pos.x, surfaceY,
+                                    (Rand_ZeroOne() * 10.0f) + actor->world.pos.z };
+                EffectSsGRipple_Spawn(play, &ripplePos, 100, 500, 0);
+
+                if (horizontalSpeed > 4.0f && !(player->stateFlags1 & PLAYER_STATE1_IN_WATER) &&
+                    surfaceY < player->bodyPartsPos[PLAYER_BODYPART_WAIST].y) {
+                    Vec3f splashPos = { player->bodyPartsPos[PLAYER_BODYPART_WAIST].x, surfaceY,
+                                        player->bodyPartsPos[PLAYER_BODYPART_WAIST].z };
+                    EffectSsGSplash_Spawn(play, &splashPos, NULL, NULL, 0, (s16)((horizontalSpeed * 50.0f) + (depth * 5.0f)));
+                }
+            }
+        }
+    }
+
+    state->valid = true;
+    state->wasInWater = inWater;
+    state->lastPos = actor->world.pos;
+}
+
 void Math_Vec3s_Copy(Vec3s* dest, Vec3s* src) {
     dest->x = src->x;
     dest->y = src->y;
@@ -156,6 +229,8 @@ void DummyPlayer_Update(Actor* actor, PlayState* play) {
 
         player->actor.world.pos.y += diff.y * player->actor.scale.y;
     }
+
+    DummyPlayer_UpdateWaterEffects(player, play);
 
     if (player->modelGroup != client.modelGroup) {
         // Hack to account for usage of gSaveContext

@@ -194,6 +194,12 @@ void GameInteractor_ExecuteOnCollisionDamage(void* victim, void* attacker, uint3
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnCollisionDamage>(victim, attacker, dmgFlags, damage);
 }
 
+void GameInteractor_ExecuteOnHitEffect(void* attacker, void* victim, int16_t hitmark, uint8_t sparks, uint16_t sfxId,
+                                       float x, float y, float z) {
+    GameInteractor::Instance->ExecuteHooks<GameInteractor::OnHitEffect>(attacker, victim, hitmark, sparks, sfxId, x, y,
+                                                                         z);
+}
+
 void GameInteractor_ExecuteOnBossDefeat(void* actor) {
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnBossDefeat>(actor);
     GameInteractor::Instance->ExecuteHooksForID<GameInteractor::OnBossDefeat>(((Actor*)actor)->id, actor);
